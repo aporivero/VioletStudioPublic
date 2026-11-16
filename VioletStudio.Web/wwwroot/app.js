@@ -174,7 +174,7 @@ async function renderAccountModal(account) {
 
 function adminModal() {
   if(state.isAdmin){ adminDashboard(); return; }
-  showModal(`<span class="section-kicker">YÖNETİCİ PANELİ</span><h2>Admin girişi</h2><p>Yerel admin (<code>admin.local.json</code>) ile giriş yapın.</p><label class="admin-login-label">Kullanıcı adı<input id="adminUsername" class="modal-input" autocomplete="username" value="Apoaxp"></label><label class="admin-login-label">Parola<input id="adminPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Parola"></label><div id="adminLoginError" class="admin-error"></div><div class="modal-buttons"><button id="adminSignIn" class="modal-primary">Giriş yap</button><button id="adminCancel" class="modal-secondary">Vazgeç</button></div>`);
+  showModal(`<span class="section-kicker">YÖNETİCİ PANELİ</span><h2>Admin girişi</h2><p>Yerel admin (<code>admin.local.json</code>) ile giriş yapın.</p><label class="admin-login-label">Kullanıcı adı<input id="adminUsername" class="modal-input" autocomplete="username" placeholder="Kullanıcı adı"></label><label class="admin-login-label">Parola<input id="adminPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Parola"></label><div id="adminLoginError" class="admin-error"></div><div class="modal-buttons"><button id="adminSignIn" class="modal-primary">Giriş yap</button><button id="adminCancel" class="modal-secondary">Vazgeç</button></div>`);
   $('#adminCancel').onclick = closeModal;
   $('#adminSignIn').onclick = async () => {
     const button = $('#adminSignIn'); button.disabled = true; button.textContent = 'Kontrol ediliyor…';

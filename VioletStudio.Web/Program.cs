@@ -64,7 +64,16 @@ var localSettingsPath = Path.Combine(app.Environment.ContentRootPath, "admin.loc
 var adminCredentials = File.Exists(localSettingsPath)
     ? JsonSerializer.Deserialize<AdminCredentials>(await File.ReadAllTextAsync(localSettingsPath), JsonOptions.Web)
     : null;
-if (adminCredentials is null) app.Logger.LogError("Admin settings missing: admin.local.json.");
+if (adminCredentials is null)
+{
+    var u = app.Configuration["Admin:Username"];
+    var s = app.Configuration["Admin:Salt"];
+    var h = app.Configuration["Admin:PasswordHash"];
+    var it = app.Configuration["Admin:Iterations"];
+    if (!string.IsNullOrWhiteSpace(u) && !string.IsNullOrWhiteSpace(s) && !string.IsNullOrWhiteSpace(h))
+        adminCredentials = new AdminCredentials { Username = u, Salt = s, PasswordHash = h, Iterations = int.TryParse(it, out var n) ? n : 210000 };
+}
+if (adminCredentials is null) app.Logger.LogWarning("Admin settings missing: provide admin.local.json or Admin:* configuration (Username/Salt/PasswordHash/Iterations).");
 
 try
 {
