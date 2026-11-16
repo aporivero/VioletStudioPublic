@@ -192,7 +192,11 @@ async function adminDashboard() {
       fetch('/api/admin/messages', { credentials:'same-origin' }),
       fetch('/api/admin/users', { credentials:'same-origin' })
     ]);
-    if (!kRes.ok) throw new Error('Oturum gerekli');
+    if (!kRes.ok) {
+      let em = 'Oturum gerekli';
+      try { const ej = await kRes.json(); if (ej && ej.error) em = ej.error; } catch {}
+      throw new Error(em);
+    }
     const keys = (await kRes.json()).keys || [];
     const stats = sRes.ok ? await sRes.json() : {};
     const messages = mRes.ok ? ((await mRes.json()).messages||[]) : [];
