@@ -27,7 +27,7 @@ public sealed class VioletDbContext(DbContextOptions<VioletDbContext> options) :
             entity.Property(x => x.Provider).HasMaxLength(30);
             entity.Property(x => x.ProviderSubject).HasMaxLength(200);
             entity.Property(x => x.DeviceId).HasMaxLength(120);
-            entity.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.Property(x => x.CreatedAt);
         });
 
         modelBuilder.Entity<PurchaseOrder>(entity =>
@@ -38,7 +38,7 @@ public sealed class VioletDbContext(DbContextOptions<VioletDbContext> options) :
             entity.Property(x => x.Status).HasMaxLength(30).IsRequired();
             entity.Property(x => x.PaymentReference).HasMaxLength(120);
             entity.Property(x => x.PlanCode).HasMaxLength(30);
-            entity.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.Property(x => x.CreatedAt);
             entity.HasOne(x => x.User).WithMany(x => x.Orders).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.UserId, x.CreatedAt });
             entity.HasIndex(x => x.Status);
@@ -52,7 +52,7 @@ public sealed class VioletDbContext(DbContextOptions<VioletDbContext> options) :
             entity.Property(x => x.PlanCode).HasMaxLength(30).IsRequired();
             entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
             entity.Property(x => x.Note).HasMaxLength(500);
-            entity.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.Property(x => x.CreatedAt);
             entity.HasOne(x => x.RedeemedBy).WithMany().HasForeignKey(x => x.RedeemedByUserId).OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -63,7 +63,7 @@ public sealed class VioletDbContext(DbContextOptions<VioletDbContext> options) :
             entity.Property(x => x.Package).HasMaxLength(30).IsRequired();
             entity.Property(x => x.Message).HasMaxLength(2000).IsRequired();
             entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
-            entity.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.Property(x => x.CreatedAt);
             entity.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => x.CreatedAt);
             entity.HasIndex(x => x.Status);
@@ -78,7 +78,7 @@ public sealed class VioletDbContext(DbContextOptions<VioletDbContext> options) :
             entity.Property(x => x.Resolution).HasMaxLength(30).IsRequired();
             entity.Property(x => x.Format).HasMaxLength(20).IsRequired();
             entity.Property(x => x.SourceUrl).HasMaxLength(2048);
-            entity.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.Property(x => x.CreatedAt);
             entity.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.UserId, x.CreatedAt });
         });
@@ -87,7 +87,7 @@ public sealed class VioletDbContext(DbContextOptions<VioletDbContext> options) :
         {
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.UserId).IsUnique();
-            entity.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.Property(x => x.CreatedAt);
             entity.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
         });
     }

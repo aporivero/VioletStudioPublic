@@ -25,8 +25,14 @@ builder.Services.AddHttpClient("video-metadata", client =>
     client.DefaultRequestHeaders.UserAgent.ParseAdd("VioletStudio/1.0 (+local metadata preview)");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/html;q=0.8");
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate | System.Net.DecompressionMethods.Brotli });
-builder.Services.AddDbContextFactory<VioletDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("VioletDatabase"), sql => sql.EnableRetryOnFailure()));
+var dbConnectionString = builder.Configuration.GetConnectionString("VioletDatabase");
+if (string.IsNullOrWhiteSpace(dbConnectionString))
+{
+    var dbPath = Path.Combine(builder.Environment.ContentRootPath, "work", "violet.db");
+    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+    dbConnectionString = $"Data Source={dbPath}";
+}
+builder.Services.AddDbContextFactory<VioletDbContext>(options => options.UseSqlite(dbConnectionString));
 var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "work", "data-protection");
 Directory.CreateDirectory(dataProtectionPath);
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath));
@@ -64,18 +70,20 @@ try
 {
     await using var db = await app.Services.GetRequiredService<IDbContextFactory<VioletDbContext>>().CreateDbContextAsync();
     await db.Database.EnsureCreatedAsync();
-    // Best-effort compatibility for older local DBs (EnsureCreated doesn't migrate). Ignore failures.
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','Role') IS NULL ALTER TABLE Users ADD Role nvarchar(20) NOT NULL CONSTRAINT DF_Users_Role DEFAULT 'USER'"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','Status') IS NULL ALTER TABLE Users ADD Status nvarchar(20) NOT NULL CONSTRAINT DF_Users_Status DEFAULT 'ACTIVE'"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','ProLifetime') IS NULL ALTER TABLE Users ADD ProLifetime bit NOT NULL CONSTRAINT DF_Users_ProLifetime DEFAULT 0"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','ProfileImage') IS NULL ALTER TABLE Users ADD ProfileImage nvarchar(1024) NULL"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','DeviceId') IS NULL ALTER TABLE Users ADD DeviceId nvarchar(120) NULL"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','Provider') IS NULL ALTER TABLE Users ADD Provider nvarchar(30) NULL"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','ProviderSubject') IS NULL ALTER TABLE Users ADD ProviderSubject nvarchar(200) NULL"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('LicenseKeys','PlanCode') IS NULL ALTER TABLE LicenseKeys ADD PlanCode nvarchar(30) NOT NULL CONSTRAINT DF_LicenseKeys_PlanCode DEFAULT 'PRO_1M'"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('LicenseKeys','Note') IS NULL ALTER TABLE LicenseKeys ADD Note nvarchar(500) NULL"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Orders','PlanCode') IS NULL ALTER TABLE Orders ADD PlanCode nvarchar(30) NULL"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync(@"
+    // Best-effort compatibility for older SQL Server DBs (EnsureCreated doesn't migrate). Skip for SQLite/fresh DBs.
+    if (db.Database.ProviderName?.Contains("SqlServer", StringComparison.OrdinalIgnoreCase) == true)
+    {
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','Role') IS NULL ALTER TABLE Users ADD Role nvarchar(20) NOT NULL CONSTRAINT DF_Users_Role DEFAULT 'USER'"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','Status') IS NULL ALTER TABLE Users ADD Status nvarchar(20) NOT NULL CONSTRAINT DF_Users_Status DEFAULT 'ACTIVE'"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','ProLifetime') IS NULL ALTER TABLE Users ADD ProLifetime bit NOT NULL CONSTRAINT DF_Users_ProLifetime DEFAULT 0"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','ProfileImage') IS NULL ALTER TABLE Users ADD ProfileImage nvarchar(1024) NULL"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','DeviceId') IS NULL ALTER TABLE Users ADD DeviceId nvarchar(120) NULL"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','Provider') IS NULL ALTER TABLE Users ADD Provider nvarchar(30) NULL"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Users','ProviderSubject') IS NULL ALTER TABLE Users ADD ProviderSubject nvarchar(200) NULL"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('LicenseKeys','PlanCode') IS NULL ALTER TABLE LicenseKeys ADD PlanCode nvarchar(30) NOT NULL CONSTRAINT DF_LicenseKeys_PlanCode DEFAULT 'PRO_1M'"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('LicenseKeys','Note') IS NULL ALTER TABLE LicenseKeys ADD Note nvarchar(500) NULL"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync("IF COL_LENGTH('Orders','PlanCode') IS NULL ALTER TABLE Orders ADD PlanCode nvarchar(30) NULL"); } catch { }
+        try { await db.Database.ExecuteSqlRawAsync(@"
 IF OBJECT_ID(N'dbo.PurchaseMessages', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.PurchaseMessages(
@@ -88,7 +96,7 @@ BEGIN
         CreatedAt datetimeoffset NOT NULL CONSTRAINT DF_PurchaseMessages_CreatedAt DEFAULT SYSUTCDATETIME()
     );
 END"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync(@"
+        try { await db.Database.ExecuteSqlRawAsync(@"
 IF OBJECT_ID(N'dbo.DownloadRecords', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.DownloadRecords(
@@ -103,7 +111,7 @@ BEGIN
         CreatedAt datetimeoffset NOT NULL CONSTRAINT DF_DownloadRecords_CreatedAt DEFAULT SYSUTCDATETIME()
     );
 END"); } catch { }
-    try { await db.Database.ExecuteSqlRawAsync(@"
+        try { await db.Database.ExecuteSqlRawAsync(@"
 IF OBJECT_ID(N'dbo.AdCredits', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.AdCredits(
@@ -115,12 +123,13 @@ BEGIN
         UpdatedAt datetimeoffset NOT NULL CONSTRAINT DF_AdCredits_UpdatedAt DEFAULT SYSUTCDATETIME()
     );
 END"); } catch { }
+    }
     try { await db.Database.ExecuteSqlRawAsync("UPDATE Users SET Role='ADMIN' WHERE LOWER(Email)='alponline77@gmail.com'"); } catch { }
-    app.Logger.LogInformation("Violet SQL database is ready.");
+    app.Logger.LogInformation("Violet database is ready.");
 }
 catch (Exception ex)
 {
-    app.Logger.LogWarning(ex, "SQL Server is unavailable or schema update failed. Start SQLEXPRESS and/or recreate local DB for full feature support.");
+    app.Logger.LogWarning(ex, "Database initialization failed. Check connection/permissions and schema.");
 }
 
 app.Use(async (context, next) =>
@@ -135,7 +144,7 @@ app.Use(async (context, next) =>
         {
             context.Response.Clear();
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await context.Response.WriteAsJsonAsync(new { error = "SQL Server veritabanı işlemi başarısız. SQLEXPRESS servisini ve şemayı kontrol edin (gerekirse yerel DB'yi sıfırlayın)." });
+            await context.Response.WriteAsJsonAsync(new { error = "Veritabanı işlemi başarısız. Veritabanı bağlantısını ve şemayı kontrol edin." });
         }
     }
 });
@@ -996,17 +1005,6 @@ static string? FindYtDlp(string contentRoot)
     if (File.Exists(executable)) return executable;
     executable = Path.Combine(contentRoot, "tools", "yt-dlp.exe");
     return File.Exists(executable) ? executable : null;
-}
-
-static string GetDownloadsDirectory()
-{
-    if (OperatingSystem.IsWindows())
-    {
-        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders");
-        var configured = key?.GetValue("{374DE290-123F-4565-9164-39C4925E467B}") as string;
-        if (!string.IsNullOrWhiteSpace(configured)) return Environment.ExpandEnvironmentVariables(configured);
-    }
-    return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 }
 
 static string QualityLabel(int height) => height switch
