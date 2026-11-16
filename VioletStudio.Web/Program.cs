@@ -13,7 +13,11 @@ using Microsoft.EntityFrameworkCore;
 using VioletStudio.Web.Data;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls("http://localhost:5290");
+var port = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrWhiteSpace(port))
+    builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+else
+    builder.WebHost.UseUrls("http://localhost:5290");
 builder.Services.AddHttpClient("video-metadata", client =>
 {
     client.Timeout = TimeSpan.FromSeconds(7);
