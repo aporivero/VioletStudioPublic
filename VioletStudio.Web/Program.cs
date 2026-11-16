@@ -1014,10 +1014,37 @@ static string FriendlyDownloadError(string? details)
 
 static string? FindYtDlp(string contentRoot)
 {
-    var executable = Path.Combine(AppContext.BaseDirectory, "tools", "yt-dlp.exe");
-    if (File.Exists(executable)) return executable;
-    executable = Path.Combine(contentRoot, "tools", "yt-dlp.exe");
-    return File.Exists(executable) ? executable : null;
+    var names = OperatingSystem.IsWindows()
+        ? new[] { "yt-dlp.exe", "yt-dlp" }
+        : new[] { "yt-dlp", "yt-dlp.exe" };
+    foreach (var name in names)
+    {
+        var executable = Path.Combine(AppContext.BaseDirectory, "tools", name);
+        if (File.Exists(executable)) return executable;
+        executable = Path.Combine(contentRoot, "tools", name);
+        if (File.Exists(executable)) return executable;
+    }
+    foreach (var name in names)
+    {
+        var fromPath = FindOnPath(name);
+        if (fromPath is not null) return fromPath;
+    }
+    return null;
+}
+
+static string? FindOnPath(string fileName)
+{
+    var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+    foreach (var dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        try
+        {
+            var candidate = Path.Combine(dir, fileName);
+            if (File.Exists(candidate)) return candidate;
+        }
+        catch { }
+    }
+    return null;
 }
 
 static string QualityLabel(int height) => height switch
