@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#090b18"><title>Violet — Video Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#"><span class="brand-mark"><svg viewBox="0 0 40 40"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#a88bff"/><stop offset="1" stop-color="#44d7ff"/></linearGradient></defs><path d="M9 6h22a4 4 0 0 1 4 4v20a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4Z" fill="url(#g)"/><path d="m16 12 13 8-13 8V12Z" fill="#101226"/></svg></span><span class="brand-copy"><b>violet</b><small>VIDEO STUDIO</small></span></a>
+      <div class="side-label">ÇALIŞMA ALANI</div>
+      <nav class="nav"><button class="nav-item active" data-tab="studio"><span>◈</span> İndirici <kbd>⌘ 1</kbd></button><button class="nav-item" data-tab="library"><span>▤</span> Kütüphanem <i class="nav-count" id="libraryCount">0</i></button></nav>
+      <div class="side-label sources-label">DESTEKLENEN PLATFORMLAR</div>
+      <div class="platforms"><span class="platform yt" title="YouTube"><img src="/assets/youtube.png" alt="YouTube"></span><span class="platform ig" title="Instagram"><img src="/assets/instagram.png" alt="Instagram"></span><span class="platform tt" title="TikTok"><img src="/assets/tiktok.png" alt="TikTok"></span><span class="platform xx" title="X">𝕏</span><span class="platform more">···</span></div><p class="platform-note">YouTube · Instagram · TikTok · X</p>
+      <div class="sidebar-spacer"></div>
+      <div class="upgrade-card"><div class="upgrade-glow"></div><span class="pro-tag">✦ VIOLET PRO</span><h3>Daha fazlasını<br>özgür bırak.</h3><p>4K kalite, hızlı indirme ve daha fazlası.</p><button id="upgradeButton" class="upgrade-button">Pro'yu keşfet <span>→</span></button></div>
+      <button id="adminButton" class="admin-link"><span>⚙</span> Yönetici paneli <span class="demo-dot"></span></button>
+      <div class="profile"><div class="avatar">M</div><span><b>Misafir kullanıcı</b><small>Standart plan</small></span><button class="dots">···</button></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><div class="breadcrumb"><span>Çalışma alanı</span><span class="slash">/</span><b id="breadcrumbPage">İndirici</b></div><div class="top-actions"><span class="secure-label"><i></i> Güvenli bağlantı</span><button id="profileButton" class="profile-top"><span class="avatar mini">M</span><span>Hesabım</span><span class="down">⌄</span></button></div></header>
+      <section id="studioView" class="view active-view">
+        <div class="hero"><div class="hero-copy"><div class="eyebrow"><span class="spark">✦</span> VİDEO İNDİRMENİN YENİ YOLU <span class="eyeline"></span></div><h1>Favori anların,<br><span>hep yanında.</span></h1><p>Linki bırak. Kaliteyi seç. Gerisini Violet halletsin.</p></div><div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="art-card back-card"><span>✦</span><b>4K</b><small>ULTRA HD</small></div><div class="art-card front-card"><div class="art-play">▶</div><div class="art-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><span class="float-star star-a">✦</span><span class="float-star star-b">✧</span><span class="float-dot dot-a"></span><span class="float-dot dot-b"></span></div></div>
+        <div class="workspace-grid"><section class="panel download-panel"><div class="panel-heading"><div><span class="section-kicker">HIZLI İNDİRME</span><h2>Yeni indirme oluştur</h2></div><span class="step-badge"><i></i> 01 / 02</span></div>
+          <label class="input-label" for="urlInput">VİDEO LİNKİ</label><div class="url-box"><span class="link-icon">↗</span><input id="urlInput" type="url" placeholder="YouTube, Instagram, TikTok veya X linkini yapıştır…"><button id="pasteButton" class="paste-button">Yapıştır</button></div>
+          <div class="link-tip"><span>✧</span> Video linkini yapıştırarak da hemen başlayabilirsin.</div>
+          <div id="videoPreview" class="video-preview hidden"><div class="preview-thumb"><img id="previewImage" alt="Video kapağı" class="hidden"><span id="previewPlay">▶</span></div><div class="preview-info"><small id="previewProvider">VİDEO LİNKİ ALGILANDI</small><b id="previewTitle">Video bağlantısı alındı</b><span id="previewHost"></span></div><button id="clearLink" class="clear-link">×</button></div>
+          <div class="options-heading"><div><span class="section-kicker">ÇIKTI AYARLARI</span><h3>Nasıl kaydedelim?</h3></div><span class="format-toggle"><button id="videoMode" class="selected">▣ Video</button><button id="audioMode">♫ MP3</button></span></div>
+          <div id="qualityOptions" class="quality-grid"><button class="quality-card locked" data-quality="4K"><span>4K <i>✦ PRO</i></span><small>2160p · Ultra HD</small><span class="lock">♙</span></button><button class="quality-card locked" data-quality="2K"><span>2K <i>✦ PRO</i></span><small>1440p · QHD</small><span class="lock">♙</span></button><button class="quality-card locked" data-quality="1080p"><span>1080p <i>✦ PRO</i></span><small>Full HD</small><span class="lock">♙</span></button><button class="quality-card selected" data-quality="720p"><span>720p <em>ÜCRETSİZ</em></span><small>HD · Önerilen</small><span class="check">✓</span></button><button class="quality-card" data-quality="480p"><span>480p</span><small>Standart kalite</small></button><button class="quality-card" data-quality="360p"><span>360p</span><small>Düşük veri kullanımı</small></button></div>
+          <div id="audioOptions" class="audio-options hidden"><span class="audio-note">MP3 ses formatı · 320 kbps'ye kadar</span><select id="audioBitrate"><option>320 kbps · Yüksek kalite</option><option>192 kbps · Dengeli</option><option>128 kbps · Küçük dosya</option></select></div>
+          <div class="download-footer"><div class="plan-note"><span class="plan-icon">✧</span><span><b id="planName">Standart plan</b><small id="planDetail">720p ve altı ücretsiz</small></span></div><button id="downloadButton" class="download-button"><span>↓</span> İndirmeyi başlat</button></div>
+          <div id="statusMessage" class="status-message hidden"></div>
+        </section>
+        <aside class="right-column"><section class="panel plan-panel"><div class="plan-top"><span class="section-kicker">PLANIN</span><span id="planBadge" class="standard-badge">STANDART</span></div><h3>İyi seyirler,<br><span>iyi saklamalar.</span></h3><div class="usage-label"><span>Video kalitesi</span><b id="planQuality">720p <small>ve altı</small></b></div><div class="usage-track"><i></i></div><div id="planCaption" class="usage-caption">Standart planda kullanılabilir</div><div class="plan-divider"></div><button id="watchAdsButton" class="watch-ad-button"><span class="ad-icon">▷</span><span><b>Reklam izle, Pro kullan</b><small>4 reklam = 1 Pro indirme hakkı</small></span><span class="arrow">→</span></button><div class="ad-progress"><span id="adProgressText">0 / 4 reklam izlendi</span><div class="ad-dots"><i></i><i></i><i></i><i></i></div></div></section>
+          <section class="panel pro-panel"><div class="pro-orb">✦</div><span class="section-kicker">VIOLET PRO</span><h3>Sınırları<br><span>kaldır.</span></h3><ul><li><i>✓</i> 4K ve 2K indirme</li><li><i>✓</i> Daha hızlı indirme</li><li><i>✓</i> Reklamsız deneyim</li><li><i>✓</i> Toplu indirme</li></ul><button id="seePlans" class="pro-cta">Planları incele <span>→</span></button><div class="pro-price">₺99<span> / aydan başlayan</span></div></section>
+          <div class="side-foot"><span>Violet v1.0 <i>·</i> Güvenli ve hızlı</span><span>Yardım merkezi ↗</span></div></aside></div>
+      </section>
+      <section id="libraryView" class="view library-view"><div class="library-head"><div><span class="section-kicker">KÜTÜPHANEM</span><h1>İndirdiklerin burada.</h1><p>Bu oturumda oluşturduğun indirmeler listelenir.</p></div><button id="backToStudio" class="secondary-button">＋ Yeni indirme</button></div><div id="libraryEmpty" class="empty-state"><div class="empty-icon">▤</div><h3>Henüz bir şey yok</h3><p>İlk videonu indirdiğinde burada göreceksin.</p><button id="emptyStart" class="text-button">İndirmeye başla →</button></div><div id="libraryItems" class="library-items"></div></section>
+      <footer class="page-footer"><span>© 2025 Violet Studio</span><span>Gizlilik <i>·</i> Kullanım koşulları <i>·</i> Destek</span><span>Senin medyan, senin kontrolün <b>✦</b></span></footer>
+    </main>
+  </div>
+  <div id="modalLayer" class="modal-layer hidden"><div class="modal-backdrop"></div><section class="modal" role="dialog" aria-modal="true"><button id="modalClose" class="modal-close">×</button><div id="modalContent"></div></section></div>
+  <script src="app.js?v=5"></script>
+</body></html>

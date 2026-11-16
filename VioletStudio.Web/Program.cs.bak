@@ -1,0 +1,752 @@
+using System.Data;
+using System.Data.Common;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Net.Mail;
+using System.Net;
+using Microsoft.Win32;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
+using VioletStudio.Web.Data;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls("http://localhost:5290");
+builder.Services.AddHttpClient("video-metadata", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(7);
+    client.MaxResponseContentBufferSize = 1_000_000;
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("VioletStudio/1.0 (+local metadata preview)");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/html;q=0.8");
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli });
+builder.Services.AddDbContextFactory<VioletDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("VioletDatabase"), sql => sql.EnableRetryOnFailure()));
+var dataProtectionPath = Path.Combine(builder.Environment.ContentRootPath, "work", "data-protection");
+Directory.CreateDirectory(dataProtectionPath);
+builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath));
+builder.Services.AddDistributedMemoryCache();
+builder.Services.AddSession(options =>
+{
+    options.Cookie.Name = ".VioletStudio.Session";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    options.IdleTimeout = TimeSpan.FromHours(12);
+});
+builder.Services.AddRateLimiter(options => options.AddPolicy("login", context =>
+    RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "local",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 8,
+            Window = TimeSpan.FromMinutes(15),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        })));
+
+var app = builder.Build();
+var localSettingsPath = Path.Combine(app.Environment.ContentRootPath, "admin.local.json");
+var adminCredentials = File.Exists(localSettingsPath)
+    ? JsonSerializer.Deserialize<AdminCredentials>(await File.ReadAllTextAsync(localSettingsPath), JsonOptions.Web)
+    : null;
+if (adminCredentials is null) app.Logger.LogError("Admin settings missing: admin.local.json.");
+
+// The database is created on first run. A stopped SQL Server won't prevent the UI from opening;
+// database-backed actions return a clear 503 response until the SQL Express service is started.
+try
+{
+    await using var db = await app.Services.GetRequiredService<IDbContextFactory<VioletDbContext>>().CreateDbContextAsync();
+    await db.Database.EnsureCreatedAsync();
+    app.Logger.LogInformation("Violet SQL database is ready.");
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "SQL Server is unavailable. Start the local SQLEXPRESS service to enable accounts and orders.");
+}
+
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    try { await next(); }
+    catch (Exception ex) when (ex is DbException or DbUpdateException)
+    {
+        app.Logger.LogError(ex, "A Violet database operation failed.");
+        if (!context.Response.HasStarted)
+        {
+            context.Response.Clear();
+            context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await context.Response.WriteAsJsonAsync(new { error = "SQL Server'a ulaşılamıyor. SQLEXPRESS servisinin çalıştığını kontrol et." });
+        }
+    }
+});
+app.UseDefaultFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        if (Path.GetExtension(context.File.Name) is ".html" or ".js" or ".css")
+            context.Context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+    }
+});
+app.UseSession();
+app.UseRateLimiter();
+
+app.MapGet("/api/status", async (IDbContextFactory<VioletDbContext> factory) =>
+{
+    await using var db = await factory.CreateDbContextAsync();
+    return Results.Ok(new { database = await db.Database.CanConnectAsync() });
+});
+
+app.MapGet("/api/video/resolve", async (string url, IHttpClientFactory clients, IConfiguration configuration, ILogger<Program> logger, CancellationToken cancellationToken) =>
+{
+    if (!TryGetAllowedMediaUri(url, out var mediaUri))
+        return Results.BadRequest(new { error = "Geçerli bir video bağlantısı gir." });
+    var metadataTask = ResolveVideoMetadataAsync(mediaUri, clients.CreateClient("video-metadata"), configuration["MetaOEmbedAccessToken"], cancellationToken);
+    var formatsTask = ResolveVideoFormatsAsync(mediaUri, app.Environment.ContentRootPath, logger, cancellationToken);
+    await Task.WhenAll(metadataTask, formatsTask);
+    var info = await metadataTask;
+    var formats = await formatsTask;
+    return Results.Ok(new { info.Title, info.Provider, info.Author, info.ThumbnailUrl, qualities = formats.Qualities, formatError = formats.Error });
+});
+
+app.MapPost("/api/video/download", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var input = await ReadJson<DownloadRequest>(context);
+    if (input is null || !TryGetAllowedMediaUri(input.Url ?? "", out var mediaUri)) return Results.BadRequest(new { error = "Geçerli bir video bağlantısı gir." });
+    var isAudio = string.Equals(input.Mode, "audio", StringComparison.OrdinalIgnoreCase);
+    var height = Math.Clamp(input.Height, 1, 4320);
+    if (!isAudio && height > 720)
+    {
+        var admin = await IsAdmin(context, factory);
+        var user = admin ? null : await CurrentUser(context, factory);
+        if (!admin && (user?.ProExpiresAt is null || user.ProExpiresAt <= DateTimeOffset.UtcNow))
+            return Results.Json(new { error = "1080p ve üzeri için Pro üyeliği gerekir." }, statusCode: StatusCodes.Status403Forbidden);
+    }
+    // The quality list was already resolved when the link was pasted. Resolving again here doubled the wait
+    // (and failed with a misleading message when the second run timed out), so yt-dlp's own "height<=" selector decides.
+    var executable = FindYtDlp(app.Environment.ContentRootPath);
+    if (executable is null) return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    var downloads = GetDownloadsDirectory();
+    Directory.CreateDirectory(downloads);
+    var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+    foreach (var arg in new[] { "--ignore-config", "--no-warnings", "--no-update", "--js-runtimes", "node", "--remote-components", "ejs:github", "--no-playlist", "--windows-filenames", "-P", downloads, "-o", "%(title).180B [%(id)s].%(ext)s" }) start.ArgumentList.Add(arg);
+    if (isAudio)
+    {
+        foreach (var arg in new[] { "-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "0" }) start.ArgumentList.Add(arg);
+    }
+    else
+    {
+        start.ArgumentList.Add("-f");
+        start.ArgumentList.Add($"bv*[height<={height}]+ba/b[height<={height}]");
+        // Highest resolution first, then prefer H.264 video and AAC audio so the result merges cleanly into .mp4.
+        // (4K on YouTube is VP9/AV1 only; Opus audio inside .mp4 is what often broke the merge.)
+        start.ArgumentList.Add("-S");
+        start.ArgumentList.Add("res,vcodec:h264,acodec:aac");
+        start.ArgumentList.Add("--merge-output-format");
+        start.ArgumentList.Add("mp4");
+    }
+    start.ArgumentList.Add("--");
+    start.ArgumentList.Add(mediaUri.AbsoluteUri);
+    try
+    {
+        using var process = Process.Start(start);
+        if (process is null) return Results.Problem("İndirme başlatılamadı.");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+        timeout.CancelAfter(TimeSpan.FromHours(2));
+        using var killDownload = timeout.Token.Register(() => KillQuietly(process));
+        var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+        var error = process.StandardError.ReadToEndAsync(timeout.Token);
+        await process.WaitForExitAsync(timeout.Token);
+        _ = await output;
+        var details = await error;
+        if (process.ExitCode != 0)
+        {
+            app.Logger.LogWarning("yt-dlp download failed ({Height}p, exit {Code}): {Details}", height, process.ExitCode, details);
+            return Results.BadRequest(new { error = FriendlyDownloadError(details) });
+        }
+        return Results.Ok(new { message = "İndirilenler klasörüne kaydedildi.", path = downloads });
+    }
+    catch (OperationCanceledException) when (!context.RequestAborted.IsCancellationRequested) { return Results.Problem("İndirme zaman aşımına uğradı.", statusCode: StatusCodes.Status504GatewayTimeout); }
+    catch (Exception ex) when (ex is IOException or Win32Exception) { return Results.Problem("İndirme işlemi başlatılamadı.", statusCode: StatusCodes.Status503ServiceUnavailable); }
+});
+
+app.MapGet("/api/account/session", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    var user = await CurrentUser(context, factory);
+    return user is null ? Results.Ok(new { authenticated = false }) : Results.Ok(AccountView(user));
+});
+
+app.MapPost("/api/account/register", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var input = await ReadJson<RegisterRequest>(context);
+    if (input is null) return Results.BadRequest(new { error = "Kayıt bilgileri geçersiz." });
+    var email = (input.Email ?? "").Trim().ToLowerInvariant();
+    var displayName = (input.DisplayName ?? "").Trim();
+    if (email.Length > 320 || !IsEmail(email)) return Results.BadRequest(new { error = "Geçerli bir e-posta adresi yaz." });
+    if (displayName.Length is < 2 or > 80) displayName = email.Split('@')[0][..Math.Min(email.Split('@')[0].Length, 80)];
+    if ((input.Password ?? "").Length < 10) return Results.BadRequest(new { error = "Şifre en az 10 karakter olmalı." });
+
+    await using var db = await factory.CreateDbContextAsync();
+    if (await db.Users.AnyAsync(u => u.Email == email)) return Results.Conflict(new { error = "Bu e-posta ile hesap zaten kayıtlı." });
+    var (salt, hash) = HashPassword(input.Password!);
+    var user = new UserAccount { Email = email, DisplayName = displayName, PasswordSalt = salt, PasswordHash = hash };
+    db.Users.Add(user);
+    try { await db.SaveChangesAsync(); }
+    catch (DbUpdateException) { return Results.Conflict(new { error = "Bu e-posta ile hesap zaten kayıtlı." }); }
+    await SignInUser(context, user);
+    return Results.Created("/api/account/session", AccountView(user));
+}).RequireRateLimiting("login");
+
+app.MapPost("/api/account/login", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var input = await ReadJson<LoginRequest>(context);
+    if (input is null) return Results.BadRequest(new { error = "Giriş bilgileri geçersiz." });
+    var email = (input.Username ?? "").Trim().ToLowerInvariant();
+    await using var db = await factory.CreateDbContextAsync();
+    var user = await db.Users.SingleOrDefaultAsync(u => u.Email == email);
+    if (user is null || !VerifyPassword(input.Password ?? "", user.PasswordSalt, user.PasswordHash, user.PasswordIterations))
+        return Results.Json(new { error = "E-posta veya şifre yanlış." }, statusCode: StatusCodes.Status401Unauthorized);
+    await SignInUser(context, user);
+    return Results.Ok(AccountView(user));
+}).RequireRateLimiting("login");
+
+app.MapPost("/api/account/logout", async (HttpContext context) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    await context.Session.LoadAsync();
+    context.Session.Remove("userId");
+    return Results.Ok(new { ok = true });
+});
+
+app.MapPost("/api/admin/login", async (HttpContext context) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (adminCredentials is null) return Results.Problem("Local admin settings are missing.", statusCode: 503);
+    var input = await ReadJson<LoginRequest>(context);
+    if (input is null || !FixedTimeTextEquals(input.Username ?? "", adminCredentials.Username)
+        || !VerifyPassword(input.Password ?? "", adminCredentials.Salt, adminCredentials.PasswordHash, adminCredentials.Iterations))
+        return Results.Json(new { error = "Kullanıcı adı veya parola yanlış." }, statusCode: StatusCodes.Status401Unauthorized);
+    await context.Session.LoadAsync();
+    context.Session.SetString("admin", adminCredentials.Username);
+    return Results.Ok(new { ok = true, username = adminCredentials.Username });
+}).RequireRateLimiting("login");
+
+app.MapGet("/api/admin/session", async (HttpContext context) =>
+{
+    await context.Session.LoadAsync();
+    var username = context.Session.GetString("admin");
+    return username is null ? Results.Ok(new { authenticated = false }) : Results.Ok(new { authenticated = true, username });
+});
+
+app.MapPost("/api/admin/logout", async (HttpContext context) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    await context.Session.LoadAsync();
+    context.Session.Remove("admin");
+    return Results.Ok(new { ok = true });
+});
+
+app.MapGet("/api/admin/keys", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!await IsAdmin(context, factory)) return AdminRequired();
+    await using var db = await factory.CreateDbContextAsync();
+    var keys = await db.LicenseKeys.OrderByDescending(k => k.CreatedAt).Select(k => new
+    {
+        code = k.Code,
+        months = k.Months,
+        status = k.Status,
+        createdAt = k.CreatedAt,
+        redeemedAt = k.RedeemedAt,
+        redeemedBy = k.RedeemedBy == null ? null : k.RedeemedBy.Email
+    }).ToListAsync();
+    return Results.Ok(new { keys });
+});
+
+app.MapPost("/api/admin/keys", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!await IsAdmin(context, factory)) return AdminRequired();
+    var input = await ReadJson<CreateKeysRequest>(context);
+    if (input is null || input.Months is not (1 or 2 or 3) || input.Quantity is < 1 or > 10)
+        return Results.BadRequest(new { error = "Süre 1, 2 veya 3 ay; adet 1–10 olmalı." });
+    var created = new List<LicenseKey>();
+    for (var i = 0; i < input.Quantity; i++)
+    {
+        var bytes = RandomNumberGenerator.GetBytes(6);
+        var hex = Convert.ToHexString(bytes);
+        created.Add(new LicenseKey { Code = $"VIOLET-{hex[..4]}-{hex[4..8]}-{hex[8..]}", Months = input.Months });
+    }
+    await using var db = await factory.CreateDbContextAsync();
+    db.LicenseKeys.AddRange(created);
+    await db.SaveChangesAsync();
+    return Results.Json(new { keys = created.Select(KeyView) }, statusCode: StatusCodes.Status201Created);
+});
+
+app.MapGet("/api/admin/users", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!await IsAdmin(context, factory)) return AdminRequired();
+    await using var db = await factory.CreateDbContextAsync();
+    var users = await db.Users.OrderByDescending(u => u.CreatedAt).Select(u => new
+    {
+        id = u.Id,
+        email = u.Email,
+        displayName = u.DisplayName,
+        createdAt = u.CreatedAt,
+        proExpiresAt = u.ProExpiresAt,
+        orders = u.Orders.Count
+    }).Take(500).ToListAsync();
+    return Results.Ok(new { users });
+});
+
+app.MapGet("/api/admin/orders", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!await IsAdmin(context, factory)) return AdminRequired();
+    await using var db = await factory.CreateDbContextAsync();
+    var orders = await db.Orders.Include(o => o.User).OrderByDescending(o => o.CreatedAt).Take(500).Select(o => new
+    {
+        id = o.Id,
+        email = o.User.Email,
+        durationMonths = o.DurationMonths,
+        amount = o.Amount,
+        currency = o.Currency,
+        status = o.Status,
+        createdAt = o.CreatedAt,
+        paidAt = o.PaidAt
+    }).ToListAsync();
+    return Results.Ok(new { orders });
+});
+
+app.MapPost("/api/orders", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var user = await CurrentUser(context, factory);
+    if (user is null) return Results.Json(new { error = "Sipariş oluşturmak için önce hesabına giriş yap." }, statusCode: StatusCodes.Status401Unauthorized);
+    var input = await ReadJson<CreateOrderRequest>(context);
+    if (input is null || input.Months is not (1 or 2 or 3)) return Results.BadRequest(new { error = "Geçersiz plan süresi." });
+    var amount = input.Months switch { 1 => 99m, 2 => 179m, _ => 249m };
+    await using var db = await factory.CreateDbContextAsync();
+    var order = new PurchaseOrder { UserId = user.Id, DurationMonths = input.Months, Amount = amount, Status = "PendingPayment" };
+    db.Orders.Add(order);
+    await db.SaveChangesAsync();
+    return Results.Created($"/api/orders/{order.Id}", new { order.Id, order.DurationMonths, order.Amount, order.Currency, order.Status, order.CreatedAt });
+});
+
+app.MapGet("/api/orders", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    var user = await CurrentUser(context, factory);
+    if (user is null) return Results.Json(new { error = "Hesabına giriş yap." }, statusCode: StatusCodes.Status401Unauthorized);
+    await using var db = await factory.CreateDbContextAsync();
+    var orders = await db.Orders.Where(o => o.UserId == user.Id).OrderByDescending(o => o.CreatedAt)
+        .Select(o => new { o.Id, o.DurationMonths, o.Amount, o.Currency, o.Status, o.CreatedAt, o.PaidAt }).ToListAsync();
+    return Results.Ok(new { orders });
+});
+
+app.MapPost("/api/license/redeem", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
+{
+    if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var user = await CurrentUser(context, factory);
+    if (user is null) return Results.Json(new { error = "Lisansı kullanmak için önce hesabına giriş yap." }, statusCode: StatusCodes.Status401Unauthorized);
+    var input = await ReadJson<RedeemRequest>(context);
+    if (string.IsNullOrWhiteSpace(input?.Code)) return Results.BadRequest(new { error = "Lisans kodu gerekli." });
+
+    await using var db = await factory.CreateDbContextAsync();
+    await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+    var key = await db.LicenseKeys.SingleOrDefaultAsync(k => k.Code == input.Code.Trim());
+    if (key is null) return Results.Json(new { error = "Bu lisans anahtarı bulunamadı." }, statusCode: StatusCodes.Status404NotFound);
+    if (key.Status != "Active") return Results.Json(new { error = "Bu lisans anahtarı daha önce kullanılmış." }, statusCode: StatusCodes.Status409Conflict);
+    var account = await db.Users.SingleAsync(u => u.Id == user.Id);
+    var start = account.ProExpiresAt is { } expiry && expiry > DateTimeOffset.UtcNow ? expiry : DateTimeOffset.UtcNow;
+    account.ProExpiresAt = start.AddDays(key.Months * 30);
+    key.Status = "Redeemed";
+    key.RedeemedAt = DateTimeOffset.UtcNow;
+    key.RedeemedByUserId = user.Id;
+    await db.SaveChangesAsync();
+    await transaction.CommitAsync();
+    return Results.Ok(new { ok = true, months = key.Months, expiresAt = account.ProExpiresAt });
+});
+
+app.MapFallbackToFile("index.html");
+app.Run();
+
+static IResult AdminRequired() => Results.Json(new { error = "Admin oturumu gerekli." }, statusCode: StatusCodes.Status401Unauthorized);
+static bool IsProUser(UserAccount user) => user.ProLifetime || (user.ProExpiresAt.HasValue && user.ProExpiresAt > DateTimeOffset.UtcNow);
+static bool IsAdminUser(UserAccount? user, bool adminSession) => adminSession || string.Equals(user?.Role, "ADMIN", StringComparison.OrdinalIgnoreCase) || string.Equals(user?.Email, "alponline77@gmail.com", StringComparison.OrdinalIgnoreCase);
+static object AccountView(UserAccount user) => new {
+    authenticated = true,
+    user = new {
+        id = user.Id,
+        email = user.Email,
+        displayName = user.DisplayName,
+        image = user.ProfileImage,
+        role = user.Role,
+        proExpiresAt = user.ProExpiresAt,
+        proLifetime = user.ProLifetime,
+        isPro = IsProUser(user)
+    }
+};
+static object KeyView(LicenseKey key) => new { code = key.Code, planCode = key.PlanCode, months = key.Months, status = key.Status, createdAt = key.CreatedAt, note = key.Note, redeemedAt = key.RedeemedAt };
+
+static async Task<T?> ReadJson<T>(HttpContext context)
+{
+    try { return await context.Request.ReadFromJsonAsync<T>(); }
+    catch (JsonException) { return default; }
+}
+
+static bool IsEmail(string email)
+{
+    try { return new MailAddress(email).Address == email && email.Contains('.'); }
+    catch (FormatException) { return false; }
+}
+
+static (string Salt, string Hash) HashPassword(string password)
+{
+    var salt = RandomNumberGenerator.GetBytes(16);
+    var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210_000, HashAlgorithmName.SHA256, 32);
+    return (Convert.ToBase64String(salt), Convert.ToBase64String(hash));
+}
+
+static bool VerifyPassword(string password, string saltText, string hashText, int iterations)
+{
+    try
+    {
+        var salt = Convert.FromBase64String(saltText);
+        var expected = Convert.FromBase64String(hashText);
+        var actual = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
+        return CryptographicOperations.FixedTimeEquals(actual, expected);
+    }
+    catch (FormatException) { return false; }
+}
+
+static bool FixedTimeTextEquals(string left, string right)
+{
+    var a = System.Text.Encoding.UTF8.GetBytes(left);
+    var b = System.Text.Encoding.UTF8.GetBytes(right);
+    return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+}
+
+static bool HasSameOrigin(HttpContext context)
+{
+    var origin = context.Request.Headers["Origin"].ToString();
+    return string.IsNullOrEmpty(origin) || (Uri.TryCreate(origin, UriKind.Absolute, out var parsed)
+        && string.Equals(parsed.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase));
+}
+
+static async Task SignInUser(HttpContext context, UserAccount user)
+{
+    await context.Session.LoadAsync();
+    context.Session.SetString("userId", user.Id.ToString());
+}
+
+static async Task<UserAccount?> CurrentUser(HttpContext context, IDbContextFactory<VioletDbContext> factory)
+{
+    await context.Session.LoadAsync();
+    if (!Guid.TryParse(context.Session.GetString("userId"), out var id)) return null;
+    await using var db = await factory.CreateDbContextAsync();
+    return await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.Id == id);
+}
+
+static async Task<bool> IsAdmin(HttpContext context, IDbContextFactory<VioletDbContext>? factory = null)
+{
+    await context.Session.LoadAsync();
+    if (!string.IsNullOrEmpty(context.Session.GetString("admin"))) return true;
+    if (factory is null) return false;
+    var user = await CurrentUser(context, factory);
+    return IsAdminUser(user, false);
+}
+
+static bool TryGetAllowedMediaUri(string rawUrl, out Uri mediaUri)
+{
+    mediaUri = null!;
+    if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var parsed) || parsed.Scheme is not ("https" or "http") || !string.IsNullOrEmpty(parsed.UserInfo)) return false;
+    var host = parsed.Host.ToLowerInvariant();
+    var allowed = new[] { "youtube.com", "youtu.be", "instagram.com", "tiktok.com", "x.com", "twitter.com" };
+    if (!allowed.Any(domain => host == domain || host.EndsWith("." + domain, StringComparison.Ordinal))) return false;
+    mediaUri = parsed;
+    return true;
+}
+
+static async Task<VideoFormatInfo> ResolveVideoFormatsAsync(Uri mediaUri, string contentRoot, ILogger logger, CancellationToken cancellationToken)
+{
+    var executable = FindYtDlp(contentRoot);
+    if (executable is null) return new([], "Video çözümleyici bulunamadı.");
+    var start = new ProcessStartInfo(executable)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    };
+    foreach (var arg in new[] { "--ignore-config", "--no-warnings", "--no-update", "--js-runtimes", "node", "--remote-components", "ejs:github", "--dump-single-json", "--skip-download", "--no-playlist", "--", mediaUri.AbsoluteUri }) start.ArgumentList.Add(arg);
+    try
+    {
+        using var process = Process.Start(start);
+        if (process is null) return new([], "Video çözümlenemedi.");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
+        using var killResolve = timeout.Token.Register(() => KillQuietly(process));
+        var outputTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
+        var errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
+        await process.WaitForExitAsync(timeout.Token);
+        var output = await outputTask;
+        var stderr = await errorTask;
+        if (process.ExitCode != 0) return new([], FriendlyYtDlpError(stderr));
+        using var json = JsonDocument.Parse(output);
+        // yt-dlp may return null/non-string codec values for some format entries.
+        // Calling GetString() on those used to throw and discard all valid heights.
+        var heights = json.RootElement.ValueKind == JsonValueKind.Object &&
+            json.RootElement.TryGetProperty("formats", out var formats) && formats.ValueKind == JsonValueKind.Array
+            ? formats.EnumerateArray()
+                .Select(f =>
+                {
+                    if (f.ValueKind != JsonValueKind.Object)
+                        return 0;
+
+                    if (!f.TryGetProperty("height", out var heightElement) || !heightElement.TryGetInt32(out var height))
+                        return 0;
+
+                    if (f.TryGetProperty("vcodec", out var codec) && codec.ValueKind == JsonValueKind.String &&
+                        string.Equals(codec.GetString(), "none", StringComparison.OrdinalIgnoreCase))
+                        return 0;
+
+                    return height;
+                })
+                .Where(h => h > 0)
+                .Distinct().OrderByDescending(h => h).ToArray()
+            : [];
+        var qualities = heights.Select(h => new VideoQuality(QualityLabel(h), h)).ToArray();
+        return new(qualities, qualities.Length == 0 ? "Bu video için indirilebilir video formatı bulunamadı." : null);
+    }
+    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return new([], "Video çözümleme zaman aşımına uğradı."); }
+    catch (Exception ex) when (ex is IOException or InvalidOperationException or JsonException or Win32Exception)
+    {
+        logger.LogError(ex, "Could not read yt-dlp format data for {Host}.", mediaUri.Host);
+        return ex switch
+        {
+            JsonException => new([], "Çözümleyici geçerli format verisi döndürmedi."),
+            InvalidOperationException => new([], "Çözümleyicinin format yanıtı okunamadı."),
+            _ => new([], "yt-dlp başlatılamadı; tools klasöründeki çalıştırma dosyasını kontrol et.")
+        };
+    }
+}
+
+static void KillQuietly(Process process)
+{
+    try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+    catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException) { }
+}
+
+static string FriendlyDownloadError(string? details)
+{
+    var text = (details ?? "").Trim();
+    var error = text.ToLowerInvariant();
+    if (text.Length == 0) return "Video indirilemedi. Bağlantıyı ve videonun erişilebilir olduğunu kontrol et.";
+    if (error.Contains("requested format is not available"))
+        return "YouTube bu çözünürlük için indirilebilir akış vermedi. Bir alt kaliteyi dene.";
+    if (error.Contains("ffmpeg") && (error.Contains("not installed") || error.Contains("not found")))
+        return "FFmpeg bulunamadı. Yüksek kaliteler video ve sesi birleştirmek için FFmpeg ister; kurup PATH'e ekledikten sonra Visual Studio'yu yeniden başlat.";
+    if (error.Contains("javascript") || error.Contains("ejs") || error.Contains("js runtime"))
+        return "YouTube çözümlemesi için Node.js bileşeni çalışmadı. Node.js kurulu ve PATH içinde olmalı.";
+    if (error.Contains("no space left") || error.Contains("errno 28"))
+        return "Diskte yeterli yer yok. 4K videolar birkaç GB yer kaplayabilir.";
+    // The actual reason is normally at the end of yt-dlp's output.
+    return text.Length > 500 ? text[^500..] : text;
+}
+
+static string? FindYtDlp(string contentRoot)
+{
+    var executable = Path.Combine(AppContext.BaseDirectory, "tools", "yt-dlp.exe");
+    if (File.Exists(executable)) return executable;
+    executable = Path.Combine(contentRoot, "tools", "yt-dlp.exe");
+    return File.Exists(executable) ? executable : null;
+}
+
+static string GetDownloadsDirectory()
+{
+    if (OperatingSystem.IsWindows())
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders");
+        var configured = key?.GetValue("{374DE290-123F-4565-9164-39C4925E467B}") as string;
+        if (!string.IsNullOrWhiteSpace(configured)) return Environment.ExpandEnvironmentVariables(configured);
+    }
+    return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+}
+
+static string QualityLabel(int height) => height switch
+{
+    >= 2160 => "4K",
+    >= 1440 => "2K",
+    _ => $"{height}p"
+};
+
+static string FriendlyYtDlpError(string? details)
+{
+    var error = (details ?? "").ToLowerInvariant();
+    if (error.Contains("resolve") || error.Contains("getaddrinfo") || error.Contains("timed out") || error.Contains("connection") || error.Contains("network"))
+        return "Video sitesine bağlanılamadı. İnternet erişimini kontrol edip tekrar dene.";
+    if (error.Contains("javascript") || error.Contains("ejs") || error.Contains("runtime"))
+        return "YouTube çözümlemesi için Node.js bileşeni çalışmadı. Node.js kurulu ve PATH içinde olmalı.";
+    if (error.Contains("unsupported url") || error.Contains("no suitable extractor"))
+        return "Bu bağlantı desteklenen video sitelerinden biri değil.";
+    if (error.Contains("login") || error.Contains("sign in") || error.Contains("private video") || error.Contains("members-only"))
+        return "Video özel veya giriş gerektiriyor; herkese açık bir bağlantı dene.";
+    return "Bu video için kalite listesi alınamadı. Video herkese açık olmalı ve desteklenen bir siteden gelmeli.";
+}
+
+static async Task<VideoMetadata> ResolveVideoMetadataAsync(Uri mediaUri, HttpClient client, string? instagramToken, CancellationToken cancellationToken)
+{
+    var host = mediaUri.Host.ToLowerInvariant();
+    var provider = host switch
+    {
+        "youtu.be" or "youtube.com" or "www.youtube.com" or "m.youtube.com" => "YouTube",
+        "tiktok.com" or "www.tiktok.com" or "vm.tiktok.com" => "TikTok",
+        "instagram.com" or "www.instagram.com" => "Instagram",
+        "x.com" or "www.x.com" or "twitter.com" or "www.twitter.com" => "X",
+        _ => "Video"
+    };
+    var fallbackTitle = provider == "Video" ? Path.GetFileNameWithoutExtension(mediaUri.AbsolutePath.TrimEnd('/')) : $"{provider} videosu";
+    if (string.IsNullOrWhiteSpace(fallbackTitle)) fallbackTitle = "Video bağlantısı";
+    string? author = null;
+    string? title = null;
+    string? thumbnail = null;
+    string? endpoint = null;
+
+    if (provider == "YouTube") endpoint = $"https://www.youtube.com/oembed?format=json&url={Uri.EscapeDataString(mediaUri.AbsoluteUri)}";
+    else if (provider == "TikTok") endpoint = $"https://www.tiktok.com/oembed?url={Uri.EscapeDataString(mediaUri.AbsoluteUri)}";
+    else if (provider == "X") endpoint = $"https://publish.twitter.com/oembed?omit_script=true&url={Uri.EscapeDataString(mediaUri.AbsoluteUri)}";
+    else if (provider == "Instagram" && !string.IsNullOrWhiteSpace(instagramToken))
+        endpoint = $"https://graph.facebook.com/v27.0/instagram_oembed?url={Uri.EscapeDataString(mediaUri.AbsoluteUri)}&access_token={Uri.EscapeDataString(instagramToken)}";
+
+    if (endpoint is not null)
+    {
+        try
+        {
+            using var response = await client.GetAsync(endpoint, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                var data = await JsonSerializer.DeserializeAsync<OEmbedVideo>(stream, JsonOptions.Web, cancellationToken);
+                title = CleanMetadata(data?.Title);
+                author = CleanMetadata(data?.AuthorName);
+                if (IsSafeThumbnail(data?.ThumbnailUrl)) thumbnail = data!.ThumbnailUrl;
+                if (provider == "X" && title is null) title = TextFromEmbedHtml(data?.Html);
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException) { }
+    }
+
+    // Instagram's oEmbed endpoint requires a Meta app access token. Without one, read only public Open Graph tags.
+    if (provider == "Instagram" && endpoint is null)
+    {
+        try
+        {
+            using var response = await client.GetAsync(mediaUri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType?.Contains("html", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var html = await response.Content.ReadAsStringAsync(cancellationToken);
+                title = ReadMeta(html, "og:title") ?? ReadMeta(html, "twitter:title");
+                var image = ReadMeta(html, "og:image") ?? ReadMeta(html, "twitter:image");
+                if (IsSafeThumbnail(image)) thumbnail = image;
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException) { }
+    }
+
+    if (provider == "YouTube" && thumbnail is null)
+    {
+        var id = GetYouTubeId(mediaUri);
+        if (id is not null) thumbnail = $"https://i.ytimg.com/vi/{id}/hqdefault.jpg";
+    }
+    return new VideoMetadata(title ?? fallbackTitle, provider, author, thumbnail);
+}
+
+static string? GetYouTubeId(Uri uri)
+{
+    var host = uri.Host.ToLowerInvariant();
+    var id = host == "youtu.be" ? uri.AbsolutePath.Trim('/') :
+        uri.AbsolutePath.StartsWith("/shorts/", StringComparison.Ordinal) || uri.AbsolutePath.StartsWith("/embed/", StringComparison.Ordinal) || uri.AbsolutePath.StartsWith("/live/", StringComparison.Ordinal)
+            ? uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1)
+            : System.Web.HttpUtility.ParseQueryString(uri.Query)["v"];
+    return id is not null && Regex.IsMatch(id, "^[A-Za-z0-9_-]{6,20}$") ? id : null;
+}
+
+static string? CleanMetadata(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value)) return null;
+    var clean = Regex.Replace(WebUtility.HtmlDecode(value), "<[^>]+>", " ").Trim();
+    return clean.Length > 240 ? clean[..240] : clean;
+}
+
+static string? TextFromEmbedHtml(string? html)
+{
+    if (string.IsNullOrWhiteSpace(html)) return null;
+    return CleanMetadata(Regex.Replace(html, "<script[^>]*>[\\s\\S]*?</script>|<[^>]+>", " ", RegexOptions.IgnoreCase));
+}
+
+static string? ReadMeta(string html, string property)
+{
+    var escaped = Regex.Escape(property);
+    var patterns = new[]
+    {
+        $"<meta[^>]*(?:property|name)\\s*=\\s*['\\\"]{escaped}['\\\"][^>]*content\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"][^>]*>",
+        $"<meta[^>]*content\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"][^>]*(?:property|name)\\s*=\\s*['\\\"]{escaped}['\\\"][^>]*>"
+    };
+    foreach (var pattern in patterns)
+    {
+        var match = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
+        if (match.Success) return CleanMetadata(match.Groups[1].Value);
+    }
+    return null;
+}
+
+static bool IsSafeThumbnail(string? value)
+{
+    if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "https") return false;
+    var host = uri.Host.ToLowerInvariant();
+    return host == "i.ytimg.com" || host.EndsWith(".ytimg.com") || host.EndsWith(".tiktokcdn.com") || host.EndsWith(".tiktokcdn-us.com") || host == "pbs.twimg.com" || host.EndsWith(".cdninstagram.com") || host.EndsWith(".fbcdn.net");
+}
+
+sealed class AdminCredentials
+{
+    public string Username { get; set; } = "";
+    public string Salt { get; set; } = "";
+    public string PasswordHash { get; set; } = "";
+    public int Iterations { get; set; } = 210000;
+}
+
+sealed class LoginRequest { public string? Username { get; set; } public string? Password { get; set; } }
+sealed class RegisterRequest { public string? Email { get; set; } public string? DisplayName { get; set; } public string? Password { get; set; } }
+sealed class CreateKeysRequest { public int Months { get; set; } public int Quantity { get; set; } }
+sealed class CreateOrderRequest { public int Months { get; set; } }
+sealed class RedeemRequest { public string? Code { get; set; } }
+sealed class DownloadRequest { public string? Url { get; set; } public string? Mode { get; set; } public int Height { get; set; } }
+sealed class VideoMetadata(string title, string provider, string? author, string? thumbnailUrl)
+{
+    public string Title { get; } = title;
+    public string Provider { get; } = provider;
+    public string? Author { get; } = author;
+    public string? ThumbnailUrl { get; } = thumbnailUrl;
+}
+
+sealed record VideoQuality(string Label, int Height);
+sealed record VideoFormatInfo(VideoQuality[] Qualities, string? Error);
+sealed class OEmbedVideo
+{
+    public string? Title { get; set; }
+    public string? AuthorName { get; set; }
+    public string? ThumbnailUrl { get; set; }
+    public string? Html { get; set; }
+}
+
+static class JsonOptions
+{
+    public static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+}

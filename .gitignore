@@ -1,0 +1,7 @@
+.env
+work/admin-keys.json
+VioletStudio.Web/work/
+**/admin.local.json
+**/bin/
+**/obj/
+.vs/
