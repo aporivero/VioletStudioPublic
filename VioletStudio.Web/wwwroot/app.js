@@ -219,10 +219,11 @@ async function adminDashboard() {
     };
     $$('.admin-tabs button').forEach(tab => tab.onclick = () => renderTab(tab.dataset.adminTab));
     renderTab('keys');
-    $('#adminLogout').onclick = async () => { await fetch('/api/admin/logout', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:'{}' }); await syncEntitlements(); closeModal(); };  } catch (e) {
-    const msg = (e && e.message) ? e.message : 'Panel yüklenemedi.';
-    if (msg.includes('fetch') || msg.includes('Network')) { toast('Sunucuya ulaşılamıyor.'); return; }
-    showModal(<span class=\"section-kicker\">YÖNETİCİ PANELİ</span><h2>Panel açılamadı</h2><p></p><div class=\"modal-buttons\"><button id=\"adminRetry\" class=\"modal-primary\">Tekrar dene</button><button id=\"adminForceLogout\" class=\"modal-secondary\">Çıkış yap</button><button id=\"adminCloseErr\" class=\"modal-secondary\">Kapat</button></div>);
+    #adminLogout.onclick = async () => { await fetch('/api/admin/logout', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:'{}' }); await syncEntitlements(); closeModal(); };
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : 'Panel yuklenemedi.';
+    if (msg.includes('fetch') || msg.includes('Network')) { toast('Sunucuya ulasilamiyor.'); return; }
+    showModal(<span class=\"section-kicker\">YONETICI PANELI</span><h2>Panel acilamadi</h2><p>${escapeHtml(msg)}</p><div class=\"modal-buttons\"><button id=\"adminRetry\" class=\"modal-primary\">Tekrar dene</button><button id=\"adminForceLogout\" class=\"modal-secondary\">Cikis yap</button><button id=\"adminCloseErr\" class=\"modal-secondary\">Kapat</button></div>);
     #adminRetry.onclick = () => adminDashboard();
     #adminCloseErr.onclick = closeModal;
     #adminForceLogout.onclick = async () => { try { await fetch('/api/admin/logout', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:'{}' }); } catch {} await syncEntitlements(); closeModal(); };
