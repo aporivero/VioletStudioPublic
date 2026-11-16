@@ -14,8 +14,11 @@ using VioletStudio.Web.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 var port = Environment.GetEnvironmentVariable("PORT");
+var desktopMode = string.Equals(Environment.GetEnvironmentVariable("VIOLET_DESKTOP"), "1", StringComparison.Ordinal);
 if (!string.IsNullOrWhiteSpace(port))
     builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+else if (desktopMode)
+    builder.WebHost.UseUrls("http://127.0.0.1:5123");
 else
     builder.WebHost.UseUrls("http://localhost:5290");
 builder.Services.AddHttpClient("video-metadata", client =>
@@ -749,6 +752,20 @@ app.MapPost("/api/ads/redeem", async (HttpContext context, IDbContextFactory<Vio
 });
 
 app.MapFallbackToFile("index.html");
+
+if (desktopMode)
+{
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            await Task.Delay(1200);
+            Process.Start(new ProcessStartInfo("http://127.0.0.1:5123") { UseShellExecute = true });
+        }
+        catch { }
+    });
+}
+
 app.Run();
 
 static IResult AdminRequired() => Results.Json(new { error = "Admin oturumu gerekli." }, statusCode: StatusCodes.Status401Unauthorized);
