@@ -64,16 +64,20 @@ var localSettingsPath = Path.Combine(app.Environment.ContentRootPath, "admin.loc
 var adminCredentials = File.Exists(localSettingsPath)
     ? JsonSerializer.Deserialize<AdminCredentials>(await File.ReadAllTextAsync(localSettingsPath), JsonOptions.Web)
     : null;
+if (adminCredentials is not null) app.Logger.LogInformation("Admin credentials loaded from admin.local.json.");
 if (adminCredentials is null)
 {
-    var u = app.Configuration["Admin:Username"];
-    var s = app.Configuration["Admin:Salt"];
-    var h = app.Configuration["Admin:PasswordHash"];
-    var it = app.Configuration["Admin:Iterations"];
+    var u = app.Configuration["Admin:Username"] ?? app.Configuration["AdminCredentials:Username"] ?? app.Configuration["ADMIN_USERNAME"];
+    var s = app.Configuration["Admin:Salt"] ?? app.Configuration["AdminCredentials:Salt"] ?? app.Configuration["ADMIN_SALT"];
+    var h = app.Configuration["Admin:PasswordHash"] ?? app.Configuration["AdminCredentials:PasswordHash"] ?? app.Configuration["ADMIN_PASSWORD_HASH"];
+    var it = app.Configuration["Admin:Iterations"] ?? app.Configuration["AdminCredentials:Iterations"] ?? app.Configuration["ADMIN_ITERATIONS"];
     if (!string.IsNullOrWhiteSpace(u) && !string.IsNullOrWhiteSpace(s) && !string.IsNullOrWhiteSpace(h))
+    {
         adminCredentials = new AdminCredentials { Username = u, Salt = s, PasswordHash = h, Iterations = int.TryParse(it, out var n) ? n : 210000 };
+        app.Logger.LogInformation("Admin credentials loaded from configuration.");
+    }
 }
-if (adminCredentials is null) app.Logger.LogWarning("Admin settings missing: provide admin.local.json or Admin:* configuration (Username/Salt/PasswordHash/Iterations).");
+if (adminCredentials is null) app.Logger.LogWarning("Admin settings missing: provide admin.local.json or Admin:* / AdminCredentials:* / ADMIN_* configuration (Username/Salt/PasswordHash/Iterations).");
 
 try
 {
