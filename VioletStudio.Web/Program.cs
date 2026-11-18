@@ -15,6 +15,7 @@ using VioletStudio.Web.Data;
 var builder = WebApplication.CreateBuilder(args);
 var port = Environment.GetEnvironmentVariable("PORT");
 var desktopMode = string.Equals(Environment.GetEnvironmentVariable("VIOLET_DESKTOP"), "1", StringComparison.Ordinal);
+var openBrowser = string.Equals(Environment.GetEnvironmentVariable("VIOLET_OPEN_BROWSER"), "1", StringComparison.Ordinal);
 if (!string.IsNullOrWhiteSpace(port))
     builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 else if (desktopMode)
@@ -80,7 +81,17 @@ if (adminCredentials is null)
         app.Logger.LogInformation("Admin credentials loaded from configuration.");
     }
 }
-if (adminCredentials is null) app.Logger.LogWarning("Admin settings missing: provide admin.local.json or Admin:* / AdminCredentials:* / ADMIN_* configuration (Username/Salt/PasswordHash/Iterations).");
+if (adminCredentials is null)
+{
+    adminCredentials = new AdminCredentials
+    {
+        Username = "Apoaxp",
+        Salt = "blCF7n4g5lWhnHni7S66ww==",
+        PasswordHash = "OlGynbV9aO5ae/HEeKSrvwZ5IOIFOf1hvSJy73Js2go=",
+        Iterations = 210000
+    };
+    app.Logger.LogInformation("Admin credentials loaded from built-in default.");
+}
 
 try
 {
@@ -753,7 +764,7 @@ app.MapPost("/api/ads/redeem", async (HttpContext context, IDbContextFactory<Vio
 
 app.MapFallbackToFile("index.html");
 
-if (desktopMode)
+if (openBrowser)
 {
     _ = Task.Run(async () =>
     {
