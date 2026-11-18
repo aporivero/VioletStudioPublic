@@ -46,7 +46,7 @@ builder.Services.AddSession(options =>
     options.Cookie.Name = ".VioletStudio.Session";
     options.Cookie.HttpOnly = true;
     options.Cookie.IsEssential = true;
-    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SameSite = SameSiteMode.Lax;
     options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
     options.IdleTimeout = TimeSpan.FromHours(12);
 });
@@ -394,6 +394,7 @@ app.MapPost("/api/admin/login", async (HttpContext context) =>
         return Results.Json(new { error = "Kullanıcı adı veya parola yanlış." }, statusCode: StatusCodes.Status401Unauthorized);
     await context.Session.LoadAsync();
     context.Session.SetString("admin", adminCredentials.Username);
+    SetAdminAuthCookie(context, adminCredentials.Username);
     return Results.Ok(new { ok = true, username = adminCredentials.Username });
 }).RequireRateLimiting("login");
 
@@ -410,6 +411,7 @@ app.MapPost("/api/admin/logout", async (HttpContext context) =>
     if (!HasSameOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     await context.Session.LoadAsync();
     context.Session.Remove("admin");
+    ClearAdminAuthCookie(context);
     return Results.Ok(new { ok = true });
 });
 
@@ -856,10 +858,69 @@ static async Task<UserAccount?> CurrentUser(HttpContext context, IDbContextFacto
     return await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.Id == id);
 }
 
+const string AdminAuthCookieName = ".VioletStudio.Admin";
+
+static void SetAdminAuthCookie(HttpContext context, string username)
+{
+    try
+    {
+        var protector = context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector("Violet.AdminAuth.v1");
+        var payload = username + "|" + DateTimeOffset.UtcNow.AddHours(12).ToUnixTimeSeconds().ToString();
+        var value = protector.Protect(payload);
+        context.Response.Cookies.Append(AdminAuthCookieName, value, new CookieOptions
+        {
+            HttpOnly = true,
+            IsEssential = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = context.Request.IsHttps,
+            Expires = DateTimeOffset.UtcNow.AddHours(12),
+            Path = "/"
+        });
+    }
+    catch { }
+}
+
+static void ClearAdminAuthCookie(HttpContext context)
+{
+    try
+    {
+        context.Response.Cookies.Delete(AdminAuthCookieName, new CookieOptions
+        {
+            HttpOnly = true,
+            IsEssential = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = context.Request.IsHttps,
+            Path = "/"
+        });
+    }
+    catch { }
+}
+
+static bool HasValidAdminAuthCookie(HttpContext context)
+{
+    try
+    {
+        if (!context.Request.Cookies.TryGetValue(AdminAuthCookieName, out var value) || string.IsNullOrWhiteSpace(value)) return false;
+        var protector = context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector("Violet.AdminAuth.v1");
+        var payload = protector.Unprotect(value);
+        var parts = payload.Split('|', 2);
+        if (parts.Length != 2) return false;
+        if (!long.TryParse(parts[1], out var exp)) return false;
+        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > exp) return false;
+        return !string.IsNullOrWhiteSpace(parts[0]);
+    }
+    catch { return false; }
+}
+
 static async Task<bool> IsAdmin(HttpContext context, IDbContextFactory<VioletDbContext>? factory = null)
 {
     await context.Session.LoadAsync();
     if (!string.IsNullOrEmpty(context.Session.GetString("admin"))) return true;
+    if (HasValidAdminAuthCookie(context))
+    {
+        try { context.Session.SetString("admin", "admin"); } catch { }
+        return true;
+    }
     if (factory is null) return false;
     var user = await CurrentUser(context, factory);
     return IsAdminUser(user, false);
