@@ -391,17 +391,10 @@ $('#qualityOptions').addEventListener('click', event => { const card=event.targe
       toast('Tamamlandi.');
       setDownloadBarDone('Tamamlandi', '');
     } else {
-      let filename = (state.resolvingTitle || 'video').replace(/[\\\\/:*?
-"
-<>|]+/g, '_').slice(0, 120) + (state.mode === 'audio' ? '.mp3' : '.mp4');
+      let filename = (state.resolvingTitle || 'video').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120) + (state.mode === 'audio' ? '.mp3' : '.mp4');
       const cd = r.headers.get('content-disposition') || '';
-      const m = /filename\*=UTF-8''([^;]+)|filename=
-"
-?([^
-"
-;]+)
-"
-?/i.exec(cd);
+      const m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(cd);
+      if (m) { try { filename = decodeURIComponent(m[1] || m[2]); } catch { filename = m[1] || m[2] || filename; } }
       if (m) { try { filename = decodeURIComponent(m[1] || m[2]); } catch { filename = m[1] || m[2] || filename; } }
       const total = Number(r.headers.get('content-length') || 0);
       let blob;
