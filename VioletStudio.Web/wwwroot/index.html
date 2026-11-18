@@ -42,6 +42,18 @@
       <footer class="page-footer"><span>© 2025 Violet Studio</span><span>Gizlilik <i>·</i> Kullanım koşulları <i>·</i> Destek</span><span>Senin medyan, senin kontrolün <b>✦</b></span></footer>
     </main>
   </div>
+  <div id="downloadBar" class="download-bar hidden" aria-live="polite">
+    <div class="download-bar-main">
+      <div class="download-bar-icon">↓</div>
+      <div class="download-bar-info">
+        <b id="downloadBarTitle">İndiriliyor...</b>
+        <small id="downloadBarPath"></small>
+      </div>
+      <div class="download-bar-stats"><span id="downloadBarPercent">Hazırlanıyor</span></div>
+      <button id="downloadBarClose" class="download-bar-close" title="Kapat">×</button>
+    </div>
+    <div class="download-bar-track"><i id="downloadBarFill"></i></div>
+  </div>
   <div id="modalLayer" class="modal-layer hidden"><div class="modal-backdrop"></div><section class="modal" role="dialog" aria-modal="true"><button id="modalClose" class="modal-close">×</button><div id="modalContent"></div></section></div>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body></html>

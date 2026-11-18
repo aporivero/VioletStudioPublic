@@ -321,47 +321,122 @@ function renderLibrary() {
 }
 function navigate(tab) { const isLibrary = tab === 'library'; $('#studioView').classList.toggle('active-view', !isLibrary); $('#libraryView').classList.toggle('active-view', isLibrary); $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.tab === tab)); $('#breadcrumbPage').textContent = isLibrary ? 'Kütüphanem' : 'İndirici'; if(isLibrary) loadLibrary(); }
 
+function formatBytes(n){ if(!n || n<0) return ''; const u=['B','KB','MB','GB']; let i=0,x=n; while(x>=1024&&i<u.length-1){x/=1024;i++;} return (i===0?x:x.toFixed(x>=100?0:1))+' '+u[i]; }
+function showDownloadBar(title, path, percentText, percentVal){
+  const bar=$('#downloadBar'); if(!bar) return;
+  bar.classList.remove('hidden','done','error');
+  $('#downloadBarTitle').textContent = title || 'İndirme';
+  $('#downloadBarPath').textContent = path || '';
+  if(percentText!=null) $('#downloadBarPercent').textContent = percentText;
+  if(typeof percentVal==='number'){
+    const ind = percentVal < 0;
+    $('#downloadBarFill').style.width = (ind ? 100 : Math.max(0, Math.min(100, percentVal))) + '%';
+    $('#downloadBarFill').style.opacity = ind ? '0.4' : '1';
+  }
+}
+function setDownloadBarDone(title, path){ const bar=$('#downloadBar'); if(!bar) return; bar.classList.remove('hidden','error'); bar.classList.add('done'); $('#downloadBarTitle').textContent=title||'İndirme tamamlandı'; if(path!=null) $('#downloadBarPath').textContent=path; $('#downloadBarPercent').textContent='100%'; $('#downloadBarFill').style.width='100%'; $('#downloadBarFill').style.opacity='1'; }
+function setDownloadBarError(title, detail){ const bar=$('#downloadBar'); if(!bar) return; bar.classList.remove('hidden','done'); bar.classList.add('error'); $('#downloadBarTitle').textContent=title||'İndirme başarısız'; if(detail!=null) $('#downloadBarPath').textContent=detail; $('#downloadBarPercent').textContent='Hata'; $('#downloadBarFill').style.width='100%'; $('#downloadBarFill').style.opacity='0.6'; }
+$('#downloadBarClose')?.addEventListener('click', ()=> $('#downloadBar')?.classList.add('hidden'));
+
+if (window.chrome?.webview) {
+  window.chrome.webview.addEventListener('message', ev => {
+    let msg = ev.data || {};
+    if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch { msg = {}; } }
+    if (msg.type === 'download-started') {
+      showDownloadBar('İndiriliyor: ' + (msg.file || ''), msg.path || 'Kaydedilecek konum seçildi', '0%', 0);
+    } else if (msg.type === 'download-progress') {
+      const p = (typeof msg.percent === 'number') ? msg.percent : -1;
+      const txt = p >= 0 ? (Math.floor(p) + '%') : (msg.received ? formatBytes(msg.received) : 'İndiriliyor');
+      showDownloadBar('İndiriliyor: ' + (msg.file || ''), msg.path || '', txt, p >= 0 ? p : -1);
+    } else if (msg.type === 'download-completed') {
+      setDownloadBarDone('İndirme tamamlandı: ' + (msg.file || ''), msg.path || '');
+      toast('İndirme tamamlandı.');
+    } else if (msg.type === 'download-interrupted') {
+      setDownloadBarError('İndirme durduruldu', (msg.reason ? (msg.reason + ' — ') : '') + (msg.path || ''));
+    } else if (msg.type === 'download-cancelled') {
+      $('#downloadBar')?.classList.add('hidden');
+      toast('İndirme iptal edildi.');
+    }
+  });
+}
+
 $('#urlInput').addEventListener('input', inspectLink); $('#urlInput').addEventListener('paste', () => setTimeout(inspectLink, 0));
 $('#pasteButton').onclick = async () => { try { $('#urlInput').value = await navigator.clipboard.readText(); inspectLink(); } catch { $('#urlInput').focus(); toast('Linki yapıştırın.'); } };
 $('#clearLink').onclick = () => { $('#urlInput').value = ''; inspectLink(); };
 $('#videoMode').onclick = () => { state.mode = 'video'; $('#videoMode').classList.add('selected'); $('#audioMode').classList.remove('selected'); $('#qualityOptions').classList.remove('hidden'); $('#audioOptions').classList.add('hidden'); };
 $('#audioMode').onclick = () => { state.mode = 'audio'; $('#audioMode').classList.add('selected'); $('#videoMode').classList.remove('selected'); $('#qualityOptions').classList.add('hidden'); $('#audioOptions').classList.remove('hidden'); };
 $('#qualityOptions').addEventListener('click', event => { const card=event.target.closest('.quality-card'); if(!card) return; if(card.classList.contains('locked') && !state.pro && !state.isAdmin){ showProModal(); return; } setQuality(card.dataset.quality, card.dataset.height || ({'4K':2160,'2K':1440,'1080p':1080,'720p':720,'480p':480,'360p':360}[card.dataset.quality])); });
-$('#downloadButton').onclick = async () => {
-  const u=parseLink($('#urlInput').value), msg=$('#statusMessage'), button=$('#downloadButton'); msg.classList.remove('hidden');
-  if(!u){ msg.textContent='Önce geçerli bir video bağlantısı ekleyin.'; return; }
-  if(state.mode==='video' && !state.availableQualities?.some(q=>Number(q.height)===state.height)){ msg.textContent='Kalite bilgisi çözümlenmedi, linki tekrar yapıştırın.'; return; }
-  if(state.mode==='video' && state.height>720 && !state.pro && !state.isAdmin){ showProModal(); return; }
-  button.disabled=true; msg.textContent='Video hazırlanıyor… (sunucuda işleniyor, bitince tarayıcı indirmesi başlayacak)';
+#downloadButton.onclick = async () => {
+  const u = parseLink(#urlInput.value), msg = #statusMessage, button = #downloadButton;
+  msg.classList.remove('hidden');
+  if (!u) { msg.textContent = 'Once gecerli bir video baglantisi ekleyin.'; return; }
+  if (state.mode === 'video' && !state.availableQualities?.some(q => Number(q.height) === state.height)) { msg.textContent = 'Kalite bilgisi cozumlenemedi, linki tekrar yapistirin.'; return; }
+  if (state.mode === 'video' && state.height > 720 && !state.pro && !state.isAdmin) { showProModal(); return; }
+  button.disabled = true;
+  msg.textContent = 'Video hazirlaniyor (sunucuda isleniyor)...';
+  const dlTitle = state.resolvingTitle || #previewTitle?.textContent || 'Video';
+  showDownloadBar('Hazirlaniyor: ' + dlTitle, 'Sunucuda isleniyor, bitince kayit konumunu secebilirsiniz', 'Hazirlaniyor', -1);
   try {
-    const r = await fetch('/api/video/download',{ method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url:u.href, mode:state.mode, height:state.height, title: state.resolvingTitle || $('#previewTitle')?.textContent || '', thumbnail: state.resolvingThumb || null, platform: state.resolvingProvider || null }) });
+    const r = await fetch('/api/video/download', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: u.href, mode: state.mode, height: state.height, title: state.resolvingTitle || #previewTitle?.textContent || '', thumbnail: state.resolvingThumb || null, platform: state.resolvingProvider || null }) });
     const ct = (r.headers.get('content-type') || '').toLowerCase();
     if (!r.ok) {
-      let err = 'İndirme başarısız.';
-      if (ct.includes('application/json')) { const data = await r.json().catch(()=>({})); err = data.error || err; }
-      else { const t = await r.text().catch(()=> ''); if (t) err = t.slice(0,300); }
+      let err = 'Indirme basarisiz.';
+      if (ct.includes('application/json')) { const data = await r.json().catch(() => ({})); err = data.error || err; }
+      else { const t = await r.text().catch(() => ''); if (t) err = t.slice(0, 300); }
       throw new Error(err);
     }
     if (ct.includes('application/json')) {
-      const data = await r.json().catch(()=>({}));
-      msg.textContent = data.message || 'İşlem tamamlandı.';
-      toast('Tamamlandı.');
+      const data = await r.json().catch(() => ({}));
+      msg.textContent = data.message || 'Islem tamamlandi.';
+      toast('Tamamlandi.');
+      setDownloadBarDone('Tamamlandi', '');
     } else {
-      const blob = await r.blob();
-      let filename = (state.resolvingTitle || 'video').replace(/[\\/:*?"<>|]+/g,'_').slice(0,120) + (state.mode==='audio'?'.mp3':'.mp4');
+      let filename = (state.resolvingTitle || 'video').replace(/[\\\\/:*?
+"
+<>|]+/g, '_').slice(0, 120) + (state.mode === 'audio' ? '.mp3' : '.mp4');
       const cd = r.headers.get('content-disposition') || '';
-      const m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(cd);
+      const m = /filename\*=UTF-8''([^;]+)|filename=
+"
+?([^
+"
+;]+)
+"
+?/i.exec(cd);
       if (m) { try { filename = decodeURIComponent(m[1] || m[2]); } catch { filename = m[1] || m[2] || filename; } }
+      const total = Number(r.headers.get('content-length') || 0);
+      let blob;
+      if (r.body && r.body.getReader) {
+        const reader = r.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) { chunks.push(value); received += value.length; }
+          if (total > 0) {
+            const pct = Math.max(0, Math.min(100, (received / total) * 100));
+            showDownloadBar('Indiriliyor: ' + filename, 'Sunucudan aliniyor (' + formatBytes(received) + ' / ' + formatBytes(total) + ')', Math.floor(pct) + '%', pct);
+          } else {
+            showDownloadBar('Indiriliyor: ' + filename, 'Sunucudan aliniyor (' + formatBytes(received) + ')', formatBytes(received), -1);
+          }
+        }
+        blob = new Blob(chunks, { type: ct || (state.mode === 'audio' ? 'audio/mpeg' : 'video/mp4') });
+      } else {
+        showDownloadBar('Indiriliyor: ' + filename, 'Sunucudan aliniyor...', 'Indiriliyor', -1);
+        blob = await r.blob();
+      }
+      showDownloadBar('Kaydet: ' + filename, window.chrome?.webview ? 'Kayit konumunu secin...' : 'Indirme baslatiliyor...', '100%', 100);
       const obj = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = obj; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(()=>URL.revokeObjectURL(obj), 30000);
-      msg.textContent = 'İndirme tarayıcıya gönderildi. İndirmelerden takip edebilirsin.';
-      toast('Tarayıcı indirmesi başladı.');
+      setTimeout(() => URL.revokeObjectURL(obj), 60000);
+      msg.textContent = window.chrome?.webview ? 'Kayit konumunu secin. Ilerleme altta gosterilecek.' : 'Indirme baslatildi.';
+      toast(window.chrome?.webview ? 'Kayit konumunu secin.' : 'Indirme basladi.');
+      if (!window.chrome?.webview) setTimeout(() => setDownloadBarDone('Indirme baslatildi: ' + filename, ''), 800);
     }
-    state.downloads.unshift({ title: state.resolvingTitle || $('#previewTitle')?.textContent || 'Video', host: state.resolvingProvider || u.hostname, quality: state.mode==='audio'?'MP3':state.quality, mode: state.mode });
+    state.downloads.unshift({ title: state.resolvingTitle || #previewTitle?.textContent || 'Video', host: state.resolvingProvider || u.hostname, quality: state.mode === 'audio' ? 'MP3' : state.quality, mode: state.mode });
     renderLibrary();
-  } catch(e){ msg.textContent=e.message; toast(e.message); } finally { button.disabled=false; }
-};
+  } catch (e) { msg.textContent = e.message; toast(e.message); setDownloadBarError('Indirme basarisiz', e.message || ''); } finally { button.disabled = false; }
+}
 $('#upgradeButton').onclick = () => showProModal(); $('#seePlans').onclick = () => showProModal(); $('#adminButton').onclick = () => adminModal(); $('#watchAdsButton').onclick = () => rewardsModal(); $('#profileButton').onclick = () => accountModal();
 $$('.nav-item').forEach(n => n.onclick = () => navigate(n.dataset.tab)); $('#backToStudio').onclick = () => navigate('studio'); $('#emptyStart').onclick = () => navigate('studio');
 $('#modalClose').onclick = closeModal; $('.modal-backdrop').onclick = closeModal; document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });

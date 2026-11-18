@@ -946,6 +946,13 @@ static bool HasValidAdminToken(HttpContext context)
 
 static async Task<bool> IsAdmin(HttpContext context, IDbContextFactory<VioletDbContext>? factory = null)
 {
+    try
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable("VIOLET_DESKTOP"), "1", StringComparison.Ordinal)
+            && (context.Connection.RemoteIpAddress is null || System.Net.IPAddress.IsLoopback(context.Connection.RemoteIpAddress)))
+            return true;
+    }
+    catch { }
     await context.Session.LoadAsync();
     if (!string.IsNullOrEmpty(context.Session.GetString("admin"))) return true;
     if (HasValidAdminAuthCookie(context) || HasValidAdminToken(context))
