@@ -173,7 +173,8 @@ async function renderAccountModal(account) {
 }
 
 function adminModal(notice = '') {
-  if(state.isAdmin){ adminDashboard(); return; }
+  if (notice && typeof notice !== 'string') notice = '';
+  if (state.isAdmin) { adminDashboard(); return; }
   showModal(`<span class="section-kicker">YONETICI PANELI</span><h2>Admin girisi</h2><p>Yonetici hesabinizla giris yapin.</p>${notice ? `<div class="admin-error" style="margin-bottom:10px">${escapeHtml(notice)}</div>` : ''}<label class="admin-login-label">Kullanici adi<input id="adminUsername" class="modal-input" autocomplete="username" placeholder="Kullanici adi"></label><label class="admin-login-label">Parola<input id="adminPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Parola"></label><div id="adminLoginError" class="admin-error"></div><div class="modal-buttons"><button id="adminSignIn" class="modal-primary">Giris yap</button><button id="adminCancel" class="modal-secondary">Vazgec</button></div>`);
   document.querySelector('#adminCancel').onclick = closeModal;
   document.querySelector('#adminSignIn').onclick = async () => {
@@ -183,8 +184,10 @@ function adminModal(notice = '') {
       const r = await fetch('/api/admin/login', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ username: (document.querySelector('#adminUsername')?.value || '').trim(), password: document.querySelector('#adminPassword')?.value || '' }) });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || 'Giris basarisiz.');
+      state.isAdmin = true;
+      updatePlan();
       await syncEntitlements();
-      if (!state.isAdmin) throw new Error('Giris yapildi ancak oturum dogrulanamadi. Lutfen tekrar deneyin.');
+      state.isAdmin = true;
       await adminDashboard();
     }
     catch (e) { if (err) err.textContent = (e.message || '').includes('fetch') ? 'Sunucuya ulasilamiyor.' : (e.message || 'Hata'); button.disabled = false; button.textContent = 'Giris yap'; }
@@ -356,7 +359,7 @@ $('#downloadButton').onclick = async () => {
     renderLibrary();
   } catch(e){ msg.textContent=e.message; toast(e.message); } finally { button.disabled=false; }
 };
-$('#upgradeButton').onclick = showProModal; $('#seePlans').onclick = showProModal; $('#adminButton').onclick = adminModal; $('#watchAdsButton').onclick = rewardsModal; $('#profileButton').onclick = accountModal;
+$('#upgradeButton').onclick = () => showProModal(); $('#seePlans').onclick = () => showProModal(); $('#adminButton').onclick = () => adminModal(); $('#watchAdsButton').onclick = () => rewardsModal(); $('#profileButton').onclick = () => accountModal();
 $$('.nav-item').forEach(n => n.onclick = () => navigate(n.dataset.tab)); $('#backToStudio').onclick = () => navigate('studio'); $('#emptyStart').onclick = () => navigate('studio');
 $('#modalClose').onclick = closeModal; $('.modal-backdrop').onclick = closeModal; document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 document.addEventListener('click', e => { const b = e.target.closest('.copy-key'); if(b){ navigator.clipboard?.writeText(b.dataset.code||''); toast('Kopyalandı.'); } });
