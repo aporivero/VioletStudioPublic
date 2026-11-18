@@ -1,4 +1,4 @@
-﻿const $ = (s) => document.querySelector(s);
+const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const state = { mode: 'video', quality: '720p', height: 720, availableQualities: null, pro: false, isAdmin: false, pendingLicense: '', reward: 0, downloads: [], user: null, resolvingThumb: null, resolvingTitle: null, resolvingProvider: null };
 const modalLayer = $('#modalLayer'), modalContent = $('#modalContent');
@@ -172,16 +172,24 @@ async function renderAccountModal(account) {
   $('#accountDone').onclick=closeModal; $('#accountLogout').onclick=async()=>{ await fetch('/api/account/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}); await syncEntitlements(); closeModal(); toast('Çıkış yapıldı.'); };
 }
 
-function adminModal() {
+function adminModal(notice = '') {
   if(state.isAdmin){ adminDashboard(); return; }
-  showModal(`<span class="section-kicker">YÖNETİCİ PANELİ</span><h2>Admin girişi</h2><p>Yerel admin (<code>admin.local.json</code>) ile giriş yapın.</p><label class="admin-login-label">Kullanıcı adı<input id="adminUsername" class="modal-input" autocomplete="username" placeholder="Kullanıcı adı"></label><label class="admin-login-label">Parola<input id="adminPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Parola"></label><div id="adminLoginError" class="admin-error"></div><div class="modal-buttons"><button id="adminSignIn" class="modal-primary">Giriş yap</button><button id="adminCancel" class="modal-secondary">Vazgeç</button></div>`);
-  $('#adminCancel').onclick = closeModal;
-  $('#adminSignIn').onclick = async () => {
-    const button = $('#adminSignIn'); button.disabled = true; button.textContent = 'Kontrol ediliyor…';
-    try { const r = await fetch('/api/admin/login', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ username:$('#adminUsername').value, password:$('#adminPassword').value }) }); const data = await r.json(); if (!r.ok) throw new Error(data.error || 'Giriş başarısız.'); await syncEntitlements(); await adminDashboard(); }
-    catch (e) { $('#adminLoginError').textContent = e.message.includes('fetch') ? 'Sunucu çalışmıyor.' : e.message; button.disabled = false; button.textContent = 'Giriş yap'; }
+  showModal(`<span class="section-kicker">YÖNETİCİ PANELİ</span><h2>Admin girişi</h2><p>Yönetici hesabınızla giriş yapın.</p>${notice ? `<div class="admin-error" style="margin-bottom:10px">${escapeHtml(notice)}</div>` : ''}<label class="admin-login-label">Kullanıcı adı<input id="adminUsername" class="modal-input" autocomplete="username" placeholder="Kullanıcı adı"></label><label class="admin-login-label">Parola<input id="adminPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Parola"></label><div id="adminLoginError" class="admin-error"></div><div class="modal-buttons"><button id="adminSignIn" class="modal-primary">Giriş yap</button><button id="adminCancel" class="modal-secondary">Vazgeç</button></div>`);
+  $(
+  $(
+    const button = $(
+    button.disabled = true; button.textContent = 'Kontrol ediliyor...';
+    try {
+      const r = await fetch('/api/admin/login', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ username: ($(
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Giriş başarısız.');
+      await syncEntitlements();
+      if (!state.isAdmin) throw new Error('Giriş yapıldı ancak oturum doğrulanamadı. Lütfen tekrar deneyin.');
+      await adminDashboard();
+    }
+    catch (e) { if (err) err.textContent = e.message.includes('fetch') ? 'Sunucuya ulaşılamıyor.' : e.message; button.disabled = false; button.textContent = 'Giriş yap'; }
   };
-  $('#adminPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') $('#adminSignIn').click(); });
+  $(
 }
 
 async function adminDashboard() {
@@ -195,6 +203,12 @@ async function adminDashboard() {
     if (!kRes.ok) {
       let em = 'Oturum gerekli';
       try { const ej = await kRes.json(); if (ej && ej.error) em = ej.error; } catch {}
+      if (kRes.status === 401 || kRes.status === 403 || /oturum|gerek|yetki|y(ö|o)netici/i.test(em)) {
+        state.isAdmin = false;
+        updatePlan();
+        adminModal('Oturum doğrulanamadı. Lütfen admin girişi yapın.');
+        return;
+      }
       throw new Error(em);
     }
     const keys = (await kRes.json()).keys || [];
