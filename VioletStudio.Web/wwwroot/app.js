@@ -174,22 +174,22 @@ async function renderAccountModal(account) {
 
 function adminModal(notice = '') {
   if(state.isAdmin){ adminDashboard(); return; }
-  showModal(`<span class="section-kicker">YÖNETİCİ PANELİ</span><h2>Admin girişi</h2><p>Yönetici hesabınızla giriş yapın.</p>${notice ? `<div class="admin-error" style="margin-bottom:10px">${escapeHtml(notice)}</div>` : ''}<label class="admin-login-label">Kullanıcı adı<input id="adminUsername" class="modal-input" autocomplete="username" placeholder="Kullanıcı adı"></label><label class="admin-login-label">Parola<input id="adminPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Parola"></label><div id="adminLoginError" class="admin-error"></div><div class="modal-buttons"><button id="adminSignIn" class="modal-primary">Giriş yap</button><button id="adminCancel" class="modal-secondary">Vazgeç</button></div>`);
-  $(
-  $(
-    const button = $(
+  showModal(`<span class="section-kicker">YONETICI PANELI</span><h2>Admin girisi</h2><p>Yonetici hesabinizla giris yapin.</p>${notice ? `<div class="admin-error" style="margin-bottom:10px">${escapeHtml(notice)}</div>` : ''}<label class="admin-login-label">Kullanici adi<input id="adminUsername" class="modal-input" autocomplete="username" placeholder="Kullanici adi"></label><label class="admin-login-label">Parola<input id="adminPassword" class="modal-input" type="password" autocomplete="current-password" placeholder="Parola"></label><div id="adminLoginError" class="admin-error"></div><div class="modal-buttons"><button id="adminSignIn" class="modal-primary">Giris yap</button><button id="adminCancel" class="modal-secondary">Vazgec</button></div>`);
+  document.querySelector('#adminCancel').onclick = closeModal;
+  document.querySelector('#adminSignIn').onclick = async () => {
+    const button = document.querySelector('#adminSignIn'); const err = document.querySelector('#adminLoginError'); if (err) err.textContent = '';
     button.disabled = true; button.textContent = 'Kontrol ediliyor...';
     try {
-      const r = await fetch('/api/admin/login', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ username: ($(
+      const r = await fetch('/api/admin/login', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ username: (document.querySelector('#adminUsername')?.value || '').trim(), password: document.querySelector('#adminPassword')?.value || '' }) });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || 'Giriş başarısız.');
+      if (!r.ok) throw new Error(data.error || 'Giris basarisiz.');
       await syncEntitlements();
-      if (!state.isAdmin) throw new Error('Giriş yapıldı ancak oturum doğrulanamadı. Lütfen tekrar deneyin.');
+      if (!state.isAdmin) throw new Error('Giris yapildi ancak oturum dogrulanamadi. Lutfen tekrar deneyin.');
       await adminDashboard();
     }
-    catch (e) { if (err) err.textContent = e.message.includes('fetch') ? 'Sunucuya ulaşılamıyor.' : e.message; button.disabled = false; button.textContent = 'Giriş yap'; }
+    catch (e) { if (err) err.textContent = (e.message || '').includes('fetch') ? 'Sunucuya ulasilamiyor.' : (e.message || 'Hata'); button.disabled = false; button.textContent = 'Giris yap'; }
   };
-  $(
+  document.querySelector('#adminPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') document.querySelector('#adminSignIn').click(); });
 }
 
 async function adminDashboard() {
