@@ -1,6 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-const state = { mode: 'video', quality: '720p', height: 720, availableQualities: null, pro: false, isAdmin: false, pendingLicense: '', reward: 0, downloads: [], user: null, resolvingThumb: null, resolvingTitle: null, resolvingProvider: null };
+const state = { mode: 'video', quality: '720p', height: 720, availableQualities: null, pro: false, isAdmin: false, adminToken: '', pendingLicense: '', reward: 0, downloads: [], user: null, resolvingThumb: null, resolvingTitle: null, resolvingProvider: null };
+function adminHeaders(extra){ const h = { ...(extra||{}) }; if (state.adminToken) h['X-Admin-Token'] = state.adminToken; return h; }
 const modalLayer = $('#modalLayer'), modalContent = $('#modalContent');
 let resolveTimer = 0, resolvingUrl = '';
 const defaultQualityMarkup = $('#qualityOptions').innerHTML;
@@ -184,10 +185,12 @@ function adminModal(notice = '') {
       const r = await fetch('/api/admin/login', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ username: (document.querySelector('#adminUsername')?.value || '').trim(), password: document.querySelector('#adminPassword')?.value || '' }) });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || 'Giris basarisiz.');
+      state.adminToken = data.token || '';
       state.isAdmin = true;
       updatePlan();
       await syncEntitlements();
       state.isAdmin = true;
+      if (data.token) state.adminToken = data.token;
       await adminDashboard();
     }
     catch (e) { if (err) err.textContent = (e.message || '').includes('fetch') ? 'Sunucuya ulasilamiyor.' : (e.message || 'Hata'); button.disabled = false; button.textContent = 'Giris yap'; }
@@ -198,19 +201,19 @@ function adminModal(notice = '') {
 async function adminDashboard() {
   try {
     const [kRes, sRes, mRes, uRes] = await Promise.all([
-      fetch('/api/admin/keys', { credentials:'same-origin' }),
-      fetch('/api/admin/stats', { credentials:'same-origin' }),
-      fetch('/api/admin/messages', { credentials:'same-origin' }),
-      fetch('/api/admin/users', { credentials:'same-origin' })
+      fetch('/api/admin/keys', { credentials:'same-origin', headers: adminHeaders() }),
+      fetch('/api/admin/stats', { credentials:'same-origin', headers: adminHeaders() }),
+      fetch('/api/admin/messages', { credentials:'same-origin', headers: adminHeaders() }),
+      fetch('/api/admin/users', { credentials:'same-origin', headers: adminHeaders() })
     ]);
     if (!kRes.ok) {
       let em = 'Oturum gerekli';
       try { const ej = await kRes.json(); if (ej && ej.error) em = ej.error; } catch {}
-      if (kRes.status === 401 || kRes.status === 403 || /oturum|gerek|yetki|y(ö|o)netici/i.test(em)) {
+      if (kRes.status === 401 || kRes.status === 403 || /oturum|gerek|yetki|admin|y[oö]netici/i.test(em)) {
         state.isAdmin = false;
+        state.adminToken = '';
         updatePlan();
         adminModal('Oturum doğrulanamadı. Lütfen admin girişi yapın.');
-        return;
       }
       throw new Error(em);
     }
@@ -231,7 +234,7 @@ async function adminDashboard() {
       if(tab==='keys') $('#generateKey').onclick = async () => {
         const button = $('#generateKey'); button.disabled = true;
         try {
-          const response = await fetch('/api/admin/keys', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ planCode: $('#adminPlan').value, quantity: Number($('#adminQuantity').value), note: $('#adminNote').value || null }) });
+          const response = await fetch('/api/admin/keys', { method:'POST', credentials:'same-origin', headers: adminHeaders({ 'Content-Type':'application/json' }), body:JSON.stringify({ planCode: $('#adminPlan').value, quantity: Number($('#adminQuantity').value), note: $('#adminNote').value || null }) });
           const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Anahtar üretilemedi.');
           $('#adminResult').innerHTML = adminKeysHtml(result.keys, true) + ($('#adminResult').innerHTML||'');
           toast('Anahtar oluşturuldu.');
@@ -240,14 +243,14 @@ async function adminDashboard() {
     };
     $$('.admin-tabs button').forEach(tab => tab.onclick = () => renderTab(tab.dataset.adminTab));
     renderTab('keys');
-    $('#adminLogout').onclick = async () => { await fetch('/api/admin/logout', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:'{}' }); await syncEntitlements(); closeModal(); };
+    $('#adminLogout').onclick = async () => { try { await fetch('/api/admin/logout', { method:'POST', credentials:'same-origin', headers: adminHeaders({ 'Content-Type':'application/json' }), body:'{}' }); } catch {} state.adminToken=''; state.isAdmin=false; await syncEntitlements(); closeModal(); };
   } catch (e) {
     const msg = (e && e.message) ? e.message : 'Panel yuklenemedi.';
     if (msg.includes('fetch') || msg.includes('Network')) { toast('Sunucuya ulasilamiyor.'); return; }
     showModal(`<span class="section-kicker">YONETICI PANELI</span><h2>Panel acilamadi</h2><p>${escapeHtml(msg)}</p><div class="modal-buttons"><button id="adminRetry" class="modal-primary">Tekrar dene</button><button id="adminForceLogout" class="modal-secondary">Cikis yap</button><button id="adminCloseErr" class="modal-secondary">Kapat</button></div>`);
     $('#adminRetry').onclick = () => adminDashboard();
     $('#adminCloseErr').onclick = closeModal;
-    $('#adminForceLogout').onclick = async () => { try { await fetch('/api/admin/logout', { method:'POST', credentials:'same-origin', headers:{ 'Content-Type':'application/json' }, body:'{}' }); } catch {} await syncEntitlements(); closeModal(); };
+    $('#adminForceLogout').onclick = async () => { try { await fetch('/api/admin/logout', { method:'POST', credentials:'same-origin', headers: adminHeaders({ 'Content-Type':'application/json' }), body:'{}' }); } catch {} state.adminToken=''; state.isAdmin=false; await syncEntitlements(); closeModal(); };
   }
 }
 function adminKeysHtml(keys, fresh = false) {
@@ -366,9 +369,11 @@ document.addEventListener('click', e => { const b = e.target.closest('.copy-key'
 
 async function syncEntitlements(){
   try {
-    const [a,u] = await Promise.all([fetch('/api/admin/session',{credentials:'same-origin'}), fetch('/api/account/session',{credentials:'same-origin'})]);
+    const [a,u] = await Promise.all([fetch('/api/admin/session',{credentials:'same-origin', headers: adminHeaders()}), fetch('/api/account/session',{credentials:'same-origin'})]);
     const admin = a.ok ? await a.json() : null; const account = u.ok ? await u.json() : null;
     state.isAdmin = !!admin?.authenticated;
+    if (admin?.token) state.adminToken = admin.token;
+    if (!state.isAdmin) state.adminToken = '';
     state.user = account?.user || null;
     state.pro = state.isAdmin || !!state.user?.isPro;
     updatePlan();

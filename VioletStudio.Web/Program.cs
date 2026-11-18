@@ -394,8 +394,8 @@ app.MapPost("/api/admin/login", async (HttpContext context) =>
         return Results.Json(new { error = "Kullanıcı adı veya parola yanlış." }, statusCode: StatusCodes.Status401Unauthorized);
     await context.Session.LoadAsync();
     context.Session.SetString("admin", adminCredentials.Username);
-    SetAdminAuthCookie(context, adminCredentials.Username);
-    return Results.Ok(new { ok = true, username = adminCredentials.Username });
+    var adminToken = SetAdminAuthCookie(context, adminCredentials.Username) ?? CreateAdminAuthValue(context, adminCredentials.Username);
+    return Results.Ok(new { ok = true, username = adminCredentials.Username, token = adminToken });
 }).RequireRateLimiting("login");
 
 app.MapGet("/api/admin/session", async (HttpContext context, IDbContextFactory<VioletDbContext> factory) =>
@@ -403,7 +403,8 @@ app.MapGet("/api/admin/session", async (HttpContext context, IDbContextFactory<V
     var admin = await IsAdmin(context, factory);
     await context.Session.LoadAsync();
     var username = context.Session.GetString("admin");
-    return Results.Ok(new { authenticated = admin, username });
+    var token = admin ? (CreateAdminAuthValue(context, adminCredentials?.Username ?? username ?? "admin")) : null;
+    return Results.Ok(new { authenticated = admin, username, token });
 });
 
 app.MapPost("/api/admin/logout", async (HttpContext context) =>
@@ -860,13 +861,39 @@ static async Task<UserAccount?> CurrentUser(HttpContext context, IDbContextFacto
 
 const string AdminAuthCookieName = ".VioletStudio.Admin";
 
-static void SetAdminAuthCookie(HttpContext context, string username)
+static string? CreateAdminAuthValue(HttpContext context, string username)
 {
     try
     {
         var protector = context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector("Violet.AdminAuth.v1");
         var payload = username + "|" + DateTimeOffset.UtcNow.AddHours(12).ToUnixTimeSeconds().ToString();
-        var value = protector.Protect(payload);
+        return protector.Protect(payload);
+    }
+    catch { return null; }
+}
+
+static bool IsValidAdminAuthValue(HttpContext context, string? value)
+{
+    try
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var protector = context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector("Violet.AdminAuth.v1");
+        var payload = protector.Unprotect(value);
+        var parts = payload.Split('|', 2);
+        if (parts.Length != 2) return false;
+        if (!long.TryParse(parts[1], out var exp)) return false;
+        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > exp) return false;
+        return !string.IsNullOrWhiteSpace(parts[0]);
+    }
+    catch { return false; }
+}
+
+static string? SetAdminAuthCookie(HttpContext context, string username)
+{
+    var value = CreateAdminAuthValue(context, username);
+    if (string.IsNullOrWhiteSpace(value)) return null;
+    try
+    {
         context.Response.Cookies.Append(AdminAuthCookieName, value, new CookieOptions
         {
             HttpOnly = true,
@@ -878,6 +905,7 @@ static void SetAdminAuthCookie(HttpContext context, string username)
         });
     }
     catch { }
+    return value;
 }
 
 static void ClearAdminAuthCookie(HttpContext context)
@@ -898,16 +926,20 @@ static void ClearAdminAuthCookie(HttpContext context)
 
 static bool HasValidAdminAuthCookie(HttpContext context)
 {
+    return context.Request.Cookies.TryGetValue(AdminAuthCookieName, out var value) && IsValidAdminAuthValue(context, value);
+}
+
+static bool HasValidAdminToken(HttpContext context)
+{
     try
     {
-        if (!context.Request.Cookies.TryGetValue(AdminAuthCookieName, out var value) || string.IsNullOrWhiteSpace(value)) return false;
-        var protector = context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector("Violet.AdminAuth.v1");
-        var payload = protector.Unprotect(value);
-        var parts = payload.Split('|', 2);
-        if (parts.Length != 2) return false;
-        if (!long.TryParse(parts[1], out var exp)) return false;
-        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > exp) return false;
-        return !string.IsNullOrWhiteSpace(parts[0]);
+        var token = context.Request.Headers["X-Admin-Token"].ToString();
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            var auth = context.Request.Headers["Authorization"].ToString();
+            if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) token = auth.Substring(7).Trim();
+        }
+        return IsValidAdminAuthValue(context, token);
     }
     catch { return false; }
 }
@@ -916,7 +948,7 @@ static async Task<bool> IsAdmin(HttpContext context, IDbContextFactory<VioletDbC
 {
     await context.Session.LoadAsync();
     if (!string.IsNullOrEmpty(context.Session.GetString("admin"))) return true;
-    if (HasValidAdminAuthCookie(context))
+    if (HasValidAdminAuthCookie(context) || HasValidAdminToken(context))
     {
         try { context.Session.SetString("admin", "admin"); } catch { }
         return true;
